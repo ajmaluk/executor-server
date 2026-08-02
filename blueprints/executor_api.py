@@ -263,6 +263,8 @@ def execute_code():
     
     lang_input = (data.get("language") or "").strip()
     code_raw = data.get("code")
+    if not code_raw and isinstance(data.get("files"), list) and len(data["files"]) > 0:
+        code_raw = data["files"][0].get("content")
     stdin_raw = data.get("stdin") or ""
     args_raw = data.get("args")
 

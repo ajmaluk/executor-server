@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 from urllib.parse import urlparse
 
 from flask import request
@@ -11,13 +12,14 @@ except ImportError:
 _AUTHAKKAN_REGEX = re.compile(r"^(?:[a-zA-Z0-9-]+\.)*uthakkan\.in$", re.IGNORECASE)
 
 
+@lru_cache(maxsize=256)
 def is_allowed_origin(origin: str) -> bool:
-    """Checks if request origin is authorized.
+    """Checks if request origin is authorized with LRU caching.
     
     Allowed origins include:
     1. Configured origins in ALLOWED_ORIGINS (or '*')
     2. 'toolpix.pythonanywhere.com'
-    3. Any subdomain of '.uthakkan.in' (e.g. 'uthakkan.in', 'api.uthakkan.in', 'code.uthakkan.in')
+    3. Any subdomain of '.uthakkan.in' (e.g. 'uthakkan.in', 'api.uthakkan.in', 'executor.uthakkan.in')
     """
     if not origin:
         return True
