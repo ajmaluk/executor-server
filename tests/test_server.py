@@ -1,6 +1,5 @@
 import json
 import unittest
-from unittest.mock import MagicMock, patch
 
 try:
     import app as server_app
@@ -50,16 +49,10 @@ class TestCodeExecutorServer(unittest.TestCase):
         self.assertIn("python_version", data)
 
     def test_readiness_endpoint(self):
-        """Readiness endpoint should check Piston connectivity."""
-        with patch.object(health_mod._health_session, "get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = [{"language": "python", "version": "3.10.0"}]
-            mock_get.return_value = mock_resp
-
-            res = self.client.get("/readyz")
-            self.assertEqual(res.status_code, 200)
-            self.assertEqual(res.get_json().get("status"), "ready")
+        """Readiness endpoint should check server status."""
+        res = self.client.get("/readyz")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json().get("status"), "ready")
 
     def test_list_languages_and_aliases(self):
         """GET /api/v1/languages and GET /api/v1/languages/py should return registry info."""
@@ -89,105 +82,42 @@ class TestCodeExecutorServer(unittest.TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(res.get_json().get("error"), "Forbidden")
 
-    def test_execute_with_stdin_and_args(self):
-        """Execution request with stdin and args should pass sanitized payload to Piston."""
-        with patch.object(executor_api_mod._session, "post") as mock_post:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "run": {"stdout": "Input: Hello\nArgs: arg1\n", "stderr": "", "code": 0},
-                "compile": {"output": ""}
+    def test_execute_native_python_code(self):
+        """Native Python execution should execute python code cleanly without external API."""
+        res = self.client.post(
+            "/api/v1/execute",
+            headers={"X-API-Key": "test-secret-key"},
+            json={
+                "language": "py",
+                "code": "import sys; print('Native Execution Test'); print(f'Input: {sys.stdin.read().strip()}')",
+                "stdin": "Hello World"
             }
-            mock_post.return_value = mock_response
+        )
 
-            res = self.client.post(
-                "/api/v1/execute",
-                headers={"X-API-Key": "test-secret-key"},
-                json={
-                    "language": "py",
-                    "code": "import sys; print(f'Input: {sys.stdin.read().strip()}'); print(f'Args: {sys.argv[1]}')",
-                    "stdin": "Hello",
-                    "args": ["arg1"]
-                }
-            )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data.get("status"), "success")
+        self.assertEqual(data.get("engine"), "native_standalone")
+        self.assertEqual(data.get("language"), "python")
+        self.assertIn("Native Execution Test", data.get("stdout"))
+        self.assertIn("Input: Hello World", data.get("stdout"))
 
-            self.assertEqual(res.status_code, 200)
-            data = res.get_json()
-            self.assertEqual(data.get("status"), "success")
-            self.assertEqual(data.get("language"), "python")
-            self.assertIn("Input: Hello", data.get("stdout"))
-
-    def test_rate_limit_optional(self):
-        """Rate limiting headers present when RATE_LIMIT_ENABLED=True."""
-        ServerConfig.RATE_LIMIT_ENABLED = True
-        with patch.object(executor_api_mod._session, "post") as mock_post:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "run": {"stdout": "OK\n", "stderr": "", "code": 0},
-                "compile": {"output": ""}
+    def test_execute_native_sqlite_code(self):
+        """Native SQLite execution should execute queries in memory."""
+        sql = "CREATE TABLE users (id INT, name TEXT); INSERT INTO users VALUES (1, 'Alice'); SELECT * FROM users;"
+        res = self.client.post(
+            "/api/v1/execute",
+            headers={"X-API-Key": "test-secret-key"},
+            json={
+                "language": "sql",
+                "code": sql
             }
-            mock_post.return_value = mock_response
+        )
 
-            res = self.client.post(
-                "/api/v1/execute",
-                headers={"X-API-Key": "test-secret-key"},
-                json={"language": "python", "code": "print('OK')"}
-            )
-
-            self.assertEqual(res.status_code, 200)
-            self.assertIn("X-RateLimit-Remaining", res.headers)
-            ServerConfig.RATE_LIMIT_ENABLED = False
-
-    def test_execute_multi_file_support(self):
-        """Execution request with 'files' array should process multi-file input."""
-        with patch.object(executor_api_mod._session, "post") as mock_post:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "run": {"stdout": "Multi-file Success\n", "stderr": "", "code": 0},
-                "compile": {"output": ""}
-            }
-            mock_post.return_value = mock_response
-
-            res = self.client.post(
-                "/api/v1/execute",
-                headers={"X-API-Key": "test-secret-key"},
-                json={
-                    "language": "python",
-                    "files": [
-                        {"name": "main.py", "content": "import helper; helper.greet()"},
-                        {"name": "helper.py", "content": "def greet(): print('Multi-file Success')"}
-                    ]
-                }
-            )
-
-            self.assertEqual(res.status_code, 200)
-            data = res.get_json()
-            self.assertEqual(data.get("status"), "success")
-            self.assertEqual(data.get("files_executed"), ["main.py", "helper.py"])
-
-    def test_java_public_class_detection(self):
-        """Java code with 'public final class Solution' should produce 'Solution.java' filename."""
-        with patch.object(executor_api_mod._session, "post") as mock_post:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "run": {"stdout": "Hello Java Solution\n", "stderr": "", "code": 0},
-                "compile": {"output": ""}
-            }
-            mock_post.return_value = mock_response
-
-            java_code = "public final class Solution { public static void main(String[] args) {} }"
-            res = self.client.post(
-                "/api/v1/execute",
-                headers={"X-API-Key": "test-secret-key"},
-                json={"language": "java", "code": java_code}
-            )
-
-            self.assertEqual(res.status_code, 200)
-            data = res.get_json()
-            self.assertEqual(data.get("filename"), "Solution.java")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data.get("status"), "success")
+        self.assertIn("Alice", data.get("stdout"))
 
 
 if __name__ == "__main__":

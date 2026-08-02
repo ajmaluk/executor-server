@@ -12,8 +12,6 @@ services:
         generateValue: true
       - key: ALLOWED_ORIGINS
         value: "https://toolpix.pythonanywhere.com,https://uthakkan.in,*"
-      - key: PISTON_API_URL
-        value: "https://emkc.org/api/v2/piston/execute"
       - key: EXECUTOR_MAX_CODE_BYTES
         value: "65536"
       - key: EXECUTOR_MAX_OUTPUT_BYTES

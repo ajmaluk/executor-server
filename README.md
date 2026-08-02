@@ -1,98 +1,41 @@
-# ToolPix Dedicated Code Executor Backend Server (Render Deployment)
+# ToolPix Standalone Code Executor Backend Server (100% Native & Free)
 
-This is a dedicated, production-ready Code Execution Engine service designed for continuous deployment on [Render](https://render.com). It provides a secure API endpoint (`/api/v1/execute`) that allows your frontend websites to compile and run code in 20+ programming languages securely.
+This is a standalone, high-performance **Native Code Execution Engine** designed for continuous deployment on [Render](https://render.com). It runs 100% natively on your server with **zero external API dependencies (No Piston API key required, 100% free forever)**.
 
 ---
 
 ## Key Features
 
-1. **Dedicated Code Execution**:
-   - Compiles and executes code snippets in 20+ supported programming languages (Python, JavaScript, TypeScript, C, C++, Java, Rust, Go, PHP, Ruby, Bash, SQL, Swift, Kotlin, Perl, R, Scala, Haskell, Lua, Tcl).
-   - Handles standard input (`stdin`), command-line arguments (`args`), compilation output, stdout, stderr, and exit codes.
-   - Enforces configurable output byte limits (`EXECUTOR_MAX_OUTPUT_BYTES`) and code size limits (`EXECUTOR_MAX_CODE_BYTES`).
+1. **100% Native & Self-Contained Engine**:
+   - Compiles and runs code snippets natively on the server (Python, JavaScript/Node.js, Bash, C, C++, PHP, Ruby, Perl, SQLite) inside isolated temporary sandboxes.
+   - Zero external third-party API dependencies (No Piston API keys or paid external limits!).
+   - In-memory SQLite execution engine built-in.
 
 2. **API Secret Authentication**:
-   - Every execution request must include a secret key in:
+   - Every request must include a valid key in:
      - Header: `X-API-Key: <your-secret-key>`
      - Header: `Authorization: Bearer <your-secret-key>`
-   - Supports multiple secret keys (`SERVER_API_KEYS="secret1,secret2"`) for multi-website integration.
 
 3. **CORS Multi-Website Support**:
-   - `ALLOWED_ORIGINS` allows specified domains or wildcard `*`.
-   - Handles `OPTIONS` preflight requests seamlessly.
+   - Automatically permits requests from `toolpix.pythonanywhere.com` and all subdomains of `uthakkan.in` (`*.uthakkan.in`).
 
 4. **Defined Endpoints**:
-   - `GET /` & `GET /healthz` - Public Render health checks.
+   - `GET /` & `GET /healthz` - Liveness health checks.
+   - `GET /readyz` - Server readiness probe.
    - `GET /api/v1/status` - Executor engine status and configuration limits.
-   - `GET /api/v1/languages` - List of supported languages and runtimes.
-   - `POST /api/v1/auth/verify` - Validate API key secret.
-   - `POST /api/v1/execute` - Execute code snippet.
+   - `GET /api/v1/languages` - Supported programming runtimes.
+   - `POST /api/v1/execute` - Execute code snippet natively.
 
 ---
 
-## API Request Format
-
-### Request (`POST /api/v1/execute`)
-
-Headers:
-```http
-Content-Type: application/json
-X-API-Key: your-secret-api-key-here
-```
-
-Body:
-```json
-{
-  "language": "python",
-  "code": "print('Hello from Render Code Executor!')\nfor i in range(3):\n    print(f'Count: {i}')",
-  "stdin": "",
-  "args": []
-}
-```
-
-### Response (`200 OK`)
-```json
-{
-  "status": "success",
-  "language": "python",
-  "runtime": "python",
-  "version": "3.10.0",
-  "output": "Hello from Render Code Executor!\nCount: 0\nCount: 1\nCount: 2\n",
-  "stdout": "Hello from Render Code Executor!\nCount: 0\nCount: 1\nCount: 2\n",
-  "stderr": "",
-  "compile_output": "",
-  "exit_code": 0
-}
-```
-
----
-
-## Deploying to Render
-
-1. Log into [Render Dashboard](https://dashboard.render.com).
-2. Click **New +** -> **Web Service**.
-3. Select your GitHub repository.
-4. Set configuration:
-   - **Root Directory**: `server`
-   - **Environment**: `Python`
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4`
-   - **Health Check Path**: `/healthz`
-5. Add Environment Variables:
-   - `SERVER_API_KEYS` = `your-secret-key-1,your-secret-key-2`
-   - `ALLOWED_ORIGINS` = `https://site1.com,https://site2.com`
-   - `PISTON_API_URL` = `https://emkc.org/api/v2/piston/execute`
-
----
-
-## Frontend Integration Example (JavaScript)
+## API Usage Example (JavaScript)
 
 ```javascript
 async function executeCodeOnRender(language, code, stdin = "") {
-  const RENDER_EXECUTOR_URL = "https://your-executor-app.onrender.com";
-  const API_SECRET = "your-secret-key-1";
+  const RENDER_URL = "https://executor-server.onrender.com";
+  const API_SECRET = "your-secret-key-here";
 
-  const response = await fetch(`${RENDER_EXECUTOR_URL}/api/v1/execute`, {
+  const response = await fetch(`${RENDER_URL}/api/v1/execute`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -101,16 +44,11 @@ async function executeCodeOnRender(language, code, stdin = "") {
     body: JSON.stringify({ language, code, stdin }),
   });
 
-  if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.message || "Execution failed");
-  }
-
   return await response.json();
 }
 
-// Example usage:
-executeCodeOnRender("python", "print(10 + 20)")
-  .then(result => console.log("Output:", result.output))
+// Example Python execution:
+executeCodeOnRender("py", "print(100 + 200)")
+  .then(res => console.log("Result:", res.stdout))
   .catch(err => console.error("Error:", err));
 ```
