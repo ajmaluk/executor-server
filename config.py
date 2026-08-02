@@ -31,9 +31,14 @@ _load_env()
 class ServerConfig:
     """Configuration settings for the Dedicated Standalone Code Executor Backend Server on Render."""
     
-    # API Secret Keys allowed to run code (comma-separated or single secret)
-    _raw_secrets = os.environ.get("SERVER_API_KEYS") or os.environ.get("API_SECRET") or ""
-    API_SECRETS = tuple(s.strip() for s in _raw_secrets.split(",") if s.strip())
+    # Global Shared API Key for all client websites
+    # Priority: GLOBAL_API_KEY > SERVER_API_KEY > API_SECRET
+    GLOBAL_API_KEY = (
+        os.environ.get("GLOBAL_API_KEY") or
+        os.environ.get("SERVER_API_KEY") or
+        os.environ.get("API_SECRET") or
+        ""
+    ).strip()
     
     # Default allowed origins (comma-separated list of domain URLs)
     _raw_origins = os.environ.get("ALLOWED_ORIGINS", "https://toolpix.pythonanywhere.com,https://uthakkan.in,*")
@@ -52,5 +57,5 @@ class ServerConfig:
     
     # Server Metadata
     SERVER_NAME = "ToolPix Native Standalone Code Executor"
-    SERVER_VERSION = "2.0.0"
+    SERVER_VERSION = "2.1.0"
     ENVIRONMENT = os.environ.get("RENDER_SERVICE_TYPE", os.environ.get("FLASK_ENV", "production"))

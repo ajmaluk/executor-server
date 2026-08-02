@@ -21,7 +21,7 @@ is_allowed_origin = server_cors.is_allowed_origin
 
 class TestCodeExecutorServer(unittest.TestCase):
     def setUp(self):
-        ServerConfig.API_SECRETS = ("test-secret-key", "site2-secret-key")
+        ServerConfig.GLOBAL_API_KEY = "test-global-secret-key"
         ServerConfig.ALLOWED_ORIGINS = ["https://customsite.com"]
         ServerConfig.RATE_LIMIT_ENABLED = False
         
@@ -83,13 +83,13 @@ class TestCodeExecutorServer(unittest.TestCase):
         self.assertEqual(res.get_json().get("error"), "Forbidden")
 
     def test_execute_native_python_code(self):
-        """Native Python execution should execute python code cleanly without external API."""
+        """Native Python execution should execute python code cleanly using Global API Key."""
         res = self.client.post(
             "/api/v1/execute",
-            headers={"X-API-Key": "test-secret-key"},
+            headers={"X-API-Key": "test-global-secret-key"},
             json={
                 "language": "py",
-                "code": "import sys; print('Native Execution Test'); print(f'Input: {sys.stdin.read().strip()}')",
+                "code": "import sys; print('Global Key Execution Test'); print(f'Input: {sys.stdin.read().strip()}')",
                 "stdin": "Hello World"
             }
         )
@@ -99,15 +99,15 @@ class TestCodeExecutorServer(unittest.TestCase):
         self.assertEqual(data.get("status"), "success")
         self.assertEqual(data.get("engine"), "native_standalone")
         self.assertEqual(data.get("language"), "python")
-        self.assertIn("Native Execution Test", data.get("stdout"))
+        self.assertIn("Global Key Execution Test", data.get("stdout"))
         self.assertIn("Input: Hello World", data.get("stdout"))
 
     def test_execute_native_sqlite_code(self):
-        """Native SQLite execution should execute queries in memory."""
+        """Native SQLite execution should execute queries using Global API Key."""
         sql = "CREATE TABLE users (id INT, name TEXT); INSERT INTO users VALUES (1, 'Alice'); SELECT * FROM users;"
         res = self.client.post(
             "/api/v1/execute",
-            headers={"X-API-Key": "test-secret-key"},
+            headers={"Authorization": "Bearer test-global-secret-key"},
             json={
                 "language": "sql",
                 "code": sql

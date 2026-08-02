@@ -47,7 +47,6 @@ def index():
 @health_bp.route("/health", methods=["GET"])
 @health_bp.route("/healthz", methods=["GET"])
 @health_bp.route("/livez", methods=["GET"])
-
 def health_check():
     """Liveness probe endpoint returning deep system metrics."""
     uptime_seconds = round(time.time() - START_TIME, 2)
@@ -97,5 +96,5 @@ def api_status():
             "toolpix.pythonanywhere.com",
             "*.uthakkan.in (uthakkan.in and all subdomains)"
         ],
-        "auth_configured": len(ServerConfig.API_SECRETS) > 0
+        "auth_configured": bool(ServerConfig.GLOBAL_API_KEY)
     }), 200

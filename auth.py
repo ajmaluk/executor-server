@@ -2,7 +2,7 @@ import hmac
 import logging
 from functools import wraps
 
-from flask import current_app, jsonify, request
+from flask import jsonify, request
 
 try:
     from config import ServerConfig
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_api_key_from_request():
-    """Extracts API Key from HTTP Headers.
+    """Extracts Global API Key from HTTP Headers.
     Supports:
       - X-API-Key: <key>
       - Authorization: Bearer <key>
@@ -35,24 +35,20 @@ def extract_api_key_from_request():
 
 
 def verify_api_key(provided_key):
-    """Verifies provided key against configured valid API secrets using timing-safe comparison."""
+    """Verifies provided key against configured GLOBAL_API_KEY using timing-safe comparison."""
     if not provided_key:
         return False
 
-    valid_secrets = ServerConfig.API_SECRETS
-    if not valid_secrets:
-        logger.warning("No SERVER_API_KEYS / API_SECRET configured in environment.")
+    global_key = ServerConfig.GLOBAL_API_KEY
+    if not global_key:
+        logger.warning("No GLOBAL_API_KEY / API_SECRET configured in environment.")
         return False
 
-    for valid_secret in valid_secrets:
-        if hmac.compare_digest(provided_key, valid_secret):
-            return True
-
-    return False
+    return hmac.compare_digest(provided_key, global_key)
 
 
 def require_api_key(f):
-    """Decorator to protect API endpoints with secret key authentication."""
+    """Decorator to protect API endpoints with Global API Key authentication."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if request.method == "OPTIONS":
@@ -69,7 +65,7 @@ def require_api_key(f):
         if not verify_api_key(provided_key):
             return jsonify({
                 "error": "Forbidden",
-                "message": "Invalid API Key or Secret provided."
+                "message": "Invalid Global API Key provided."
             }), 403
 
         return f(*args, **kwargs)
