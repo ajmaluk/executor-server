@@ -1,18 +1,13 @@
-import json
 import unittest
 
 try:
     import app as server_app
     import config as server_config
     import cors as server_cors
-    import blueprints.executor_api as executor_api_mod
-    import blueprints.health as health_mod
 except ImportError:
     import server.app as server_app
     import server.config as server_config
     import server.cors as server_cors
-    import server.blueprints.executor_api as executor_api_mod
-    import server.blueprints.health as health_mod
 
 create_app = server_app.create_app
 ServerConfig = server_config.ServerConfig
