@@ -4,7 +4,10 @@ import time
 import requests
 from flask import Blueprint, jsonify
 
-from server.config import ServerConfig
+try:
+    from config import ServerConfig
+except ImportError:
+    from server.config import ServerConfig
 
 health_bp = Blueprint("health", __name__)
 START_TIME = time.time()
@@ -16,7 +19,6 @@ def _get_memory_usage_mb():
     try:
         import resource
         usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # On macOS, ru_maxrss is in bytes; on Linux, it is in kilobytes.
         if sys.platform == "darwin":
             return round(usage / (1024 * 1024), 2)
         return round(usage / 1024, 2)
@@ -79,7 +81,7 @@ def readiness_check():
             runtimes_data = resp.json()
             if isinstance(runtimes_data, list):
                 runtimes_count = len(runtimes_data)
-    except Exception as err:
+    except Exception:
         piston_ready = False
 
     status_code = 200 if piston_ready else 503

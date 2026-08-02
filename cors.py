@@ -2,9 +2,12 @@ import re
 from urllib.parse import urlparse
 
 from flask import request
-from server.config import ServerConfig
 
-# Compiled regex patterns for domain matching
+try:
+    from config import ServerConfig
+except ImportError:
+    from server.config import ServerConfig
+
 _AUTHAKKAN_REGEX = re.compile(r"^(?:[a-zA-Z0-9-]+\.)*uthakkan\.in$", re.IGNORECASE)
 
 
@@ -30,11 +33,9 @@ def is_allowed_origin(origin: str) -> bool:
         if not hostname:
             return False
 
-        # Rule 1: toolpix.pythonanywhere.com
         if hostname == "toolpix.pythonanywhere.com":
             return True
 
-        # Rule 2: uthakkan.in and all subdomains (*.uthakkan.in)
         if _AUTHAKKAN_REGEX.match(hostname):
             return True
 

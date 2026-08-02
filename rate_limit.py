@@ -3,7 +3,10 @@ import time
 from collections import defaultdict
 from flask import jsonify, request
 
-from server.config import ServerConfig
+try:
+    from config import ServerConfig
+except ImportError:
+    from server.config import ServerConfig
 
 
 class RateLimiter:

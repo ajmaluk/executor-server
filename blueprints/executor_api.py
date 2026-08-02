@@ -6,9 +6,14 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Blueprint, jsonify, request
 
-from server.auth import require_api_key
-from server.config import ServerConfig
-from server.rate_limit import apply_rate_limit
+try:
+    from auth import require_api_key
+    from config import ServerConfig
+    from rate_limit import apply_rate_limit
+except ImportError:
+    from server.auth import require_api_key
+    from server.config import ServerConfig
+    from server.rate_limit import apply_rate_limit
 
 executor_bp = Blueprint("executor_api", __name__, url_prefix="/api/v1")
 logger = logging.getLogger(__name__)
@@ -164,7 +169,6 @@ PISTON_LANGUAGE_REGISTRY = {
     }
 }
 
-# Build Alias lookup mapping
 ALIAS_TO_KEY = {}
 for key, info in PISTON_LANGUAGE_REGISTRY.items():
     ALIAS_TO_KEY[key.lower()] = key
@@ -173,7 +177,6 @@ for key, info in PISTON_LANGUAGE_REGISTRY.items():
 
 
 def _create_pooled_session() -> requests.Session:
-    """Creates a high-performance HTTP Session with connection pooling and retries."""
     s = requests.Session()
     retries = Retry(
         total=2,
@@ -194,7 +197,6 @@ def _create_pooled_session() -> requests.Session:
 
 _session = _create_pooled_session()
 
-# Enhanced Java public class regex pattern
 PUBLIC_JAVA_CLASS_PATTERN = re.compile(
     r"(?:public\s+)+(?:final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)",
     re.MULTILINE
@@ -202,7 +204,6 @@ PUBLIC_JAVA_CLASS_PATTERN = re.compile(
 
 
 def resolve_language_key(lang_str: str):
-    """Resolves language key or alias to canonical registry key."""
     if not lang_str:
         return None
     normalized = lang_str.strip().lower()
@@ -210,7 +211,6 @@ def resolve_language_key(lang_str: str):
 
 
 def get_filename_for_code(canonical_key: str, code: str) -> str:
-    """Generates proper filename for code file (handles Java public class requirement)."""
     spec = PISTON_LANGUAGE_REGISTRY[canonical_key]
     ext = spec["extension"]
 
@@ -224,7 +224,6 @@ def get_filename_for_code(canonical_key: str, code: str) -> str:
 
 
 def sanitize_args(args_raw) -> list:
-    """Sanitizes arguments array to ensure all items are string formatted."""
     if not args_raw:
         return []
     if isinstance(args_raw, (list, tuple)):
@@ -236,7 +235,6 @@ def sanitize_args(args_raw) -> list:
 
 @executor_bp.route("/languages", methods=["GET", "OPTIONS"])
 def list_languages():
-    """Lists all supported programming languages, aliases, and versions."""
     return jsonify({
         "status": "success",
         "count": len(PISTON_LANGUAGE_REGISTRY),
@@ -247,7 +245,6 @@ def list_languages():
 
 @executor_bp.route("/languages/<string:lang_query>", methods=["GET", "OPTIONS"])
 def get_language_detail(lang_query):
-    """Returns details for a specific language or alias."""
     key = resolve_language_key(lang_query)
     if not key:
         return jsonify({
@@ -267,7 +264,6 @@ def get_language_detail(lang_query):
 @require_api_key
 @apply_rate_limit
 def execute_code():
-    """Executes code snippet in Piston sandbox with auto-alias resolution, Java class detection, and input handling."""
     data = request.get_json(silent=True) or {}
     
     lang_input = (data.get("language") or "").strip()
@@ -288,7 +284,6 @@ def execute_code():
 
     spec = PISTON_LANGUAGE_REGISTRY[canonical_key]
 
-    # Process files array or single code string
     files_to_send = []
     total_code_bytes = 0
 
@@ -315,7 +310,6 @@ def execute_code():
             "message": f"Total code size ({total_code_bytes} bytes) exceeds maximum limit of {ServerConfig.EXECUTOR_MAX_CODE_BYTES} bytes."
         }), 413
 
-    # Process & truncate STDIN if needed
     stdin_str = str(stdin_raw)
     stdin_bytes = len(stdin_str.encode("utf-8"))
     stdin_truncated = False
@@ -367,7 +361,6 @@ def execute_code():
         output = run_stage.get("output") or (stdout + stderr)
         exit_code = run_stage.get("code", 0)
 
-        # Truncate output if exceeding limits
         output_truncated = False
         if len(output.encode("utf-8")) > ServerConfig.EXECUTOR_MAX_OUTPUT_BYTES:
             output = output[:ServerConfig.EXECUTOR_MAX_OUTPUT_BYTES] + "\n...[Output Truncated]"

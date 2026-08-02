@@ -1,6 +1,9 @@
 from flask import Blueprint, jsonify
 
-from server.auth import require_api_key
+try:
+    from auth import require_api_key
+except ImportError:
+    from server.auth import require_api_key
 
 auth_bp = Blueprint("auth_api", __name__, url_prefix="/api/v1/auth")
 

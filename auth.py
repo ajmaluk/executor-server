@@ -4,7 +4,10 @@ from functools import wraps
 
 from flask import current_app, jsonify, request
 
-from server.config import ServerConfig
+try:
+    from config import ServerConfig
+except ImportError:
+    from server.config import ServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -16,17 +19,14 @@ def extract_api_key_from_request():
       - Authorization: Bearer <key>
       - Query Parameter: ?api_key=<key> (Optional fallback)
     """
-    # 1. Header: X-API-Key
     key = request.headers.get("X-API-Key")
     if key:
         return key.strip()
 
-    # 2. Header: Authorization: Bearer <key>
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:].strip()
 
-    # 3. Query string fallback
     query_key = request.args.get("api_key")
     if query_key:
         return query_key.strip()
@@ -41,7 +41,6 @@ def verify_api_key(provided_key):
 
     valid_secrets = ServerConfig.API_SECRETS
     if not valid_secrets:
-        # If no secrets are set up on server, reject all non-empty secret checks in production
         logger.warning("No SERVER_API_KEYS / API_SECRET configured in environment.")
         return False
 
@@ -56,7 +55,6 @@ def require_api_key(f):
     """Decorator to protect API endpoints with secret key authentication."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Handle preflight CORS OPTIONS requests automatically
         if request.method == "OPTIONS":
             return jsonify({"status": "ok"}), 200
 

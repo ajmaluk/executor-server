@@ -1,11 +1,18 @@
 import logging
 from flask import Flask, jsonify
 
-from server.blueprints.auth_api import auth_bp
-from server.blueprints.executor_api import executor_bp
-from server.blueprints.health import health_bp
-from server.config import ServerConfig
-from server.cors import setup_cors_headers
+try:
+    from blueprints.auth_api import auth_bp
+    from blueprints.executor_api import executor_bp
+    from blueprints.health import health_bp
+    from config import ServerConfig
+    from cors import setup_cors_headers
+except ImportError:
+    from server.blueprints.auth_api import auth_bp
+    from server.blueprints.executor_api import executor_bp
+    from server.blueprints.health import health_bp
+    from server.config import ServerConfig
+    from server.cors import setup_cors_headers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -16,18 +23,14 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(ServerConfig)
     
-    # 2 MB payload size limit for safety
     app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
-    # Register CORS header handler
     app.after_request(setup_cors_headers)
 
-    # Register Code Executor API Blueprints
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(executor_bp)
 
-    # Global Error Handlers
     @app.errorhandler(400)
     def bad_request(e):
         return jsonify({"error": "Bad Request", "message": str(e.description if hasattr(e, "description") else e)}), 400

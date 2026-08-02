@@ -2,9 +2,22 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from server.app import create_app
-from server.config import ServerConfig
-from server.cors import is_allowed_origin
+try:
+    import app as server_app
+    import config as server_config
+    import cors as server_cors
+    import blueprints.executor_api as executor_api_mod
+    import blueprints.health as health_mod
+except ImportError:
+    import server.app as server_app
+    import server.config as server_config
+    import server.cors as server_cors
+    import server.blueprints.executor_api as executor_api_mod
+    import server.blueprints.health as health_mod
+
+create_app = server_app.create_app
+ServerConfig = server_config.ServerConfig
+is_allowed_origin = server_cors.is_allowed_origin
 
 
 class TestCodeExecutorServer(unittest.TestCase):
@@ -36,17 +49,17 @@ class TestCodeExecutorServer(unittest.TestCase):
         self.assertIn("uptime_seconds", data)
         self.assertIn("python_version", data)
 
-    @patch("server.blueprints.health._health_session.get")
-    def test_readiness_endpoint(self, mock_get):
+    def test_readiness_endpoint(self):
         """Readiness endpoint should check Piston connectivity."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = [{"language": "python", "version": "3.10.0"}]
-        mock_get.return_value = mock_resp
+        with patch.object(health_mod._health_session, "get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = [{"language": "python", "version": "3.10.0"}]
+            mock_get.return_value = mock_resp
 
-        res = self.client.get("/readyz")
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.get_json().get("status"), "ready")
+            res = self.client.get("/readyz")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.get_json().get("status"), "ready")
 
     def test_list_languages_and_aliases(self):
         """GET /api/v1/languages and GET /api/v1/languages/py should return registry info."""
@@ -76,105 +89,105 @@ class TestCodeExecutorServer(unittest.TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(res.get_json().get("error"), "Forbidden")
 
-    @patch("server.blueprints.executor_api._session.post")
-    def test_execute_with_stdin_and_args(self, mock_post):
+    def test_execute_with_stdin_and_args(self):
         """Execution request with stdin and args should pass sanitized payload to Piston."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "run": {"stdout": "Input: Hello\nArgs: arg1\n", "stderr": "", "code": 0},
-            "compile": {"output": ""}
-        }
-        mock_post.return_value = mock_response
-
-        res = self.client.post(
-            "/api/v1/execute",
-            headers={"X-API-Key": "test-secret-key"},
-            json={
-                "language": "py",
-                "code": "import sys; print(f'Input: {sys.stdin.read().strip()}'); print(f'Args: {sys.argv[1]}')",
-                "stdin": "Hello",
-                "args": ["arg1"]
+        with patch.object(executor_api_mod._session, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "run": {"stdout": "Input: Hello\nArgs: arg1\n", "stderr": "", "code": 0},
+                "compile": {"output": ""}
             }
-        )
+            mock_post.return_value = mock_response
 
-        self.assertEqual(res.status_code, 200)
-        data = res.get_json()
-        self.assertEqual(data.get("status"), "success")
-        self.assertEqual(data.get("language"), "python")
-        self.assertIn("Input: Hello", data.get("stdout"))
+            res = self.client.post(
+                "/api/v1/execute",
+                headers={"X-API-Key": "test-secret-key"},
+                json={
+                    "language": "py",
+                    "code": "import sys; print(f'Input: {sys.stdin.read().strip()}'); print(f'Args: {sys.argv[1]}')",
+                    "stdin": "Hello",
+                    "args": ["arg1"]
+                }
+            )
 
-    @patch("server.blueprints.executor_api._session.post")
-    def test_rate_limit_optional(self, mock_post):
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertEqual(data.get("status"), "success")
+            self.assertEqual(data.get("language"), "python")
+            self.assertIn("Input: Hello", data.get("stdout"))
+
+    def test_rate_limit_optional(self):
         """Rate limiting headers present when RATE_LIMIT_ENABLED=True."""
         ServerConfig.RATE_LIMIT_ENABLED = True
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "run": {"stdout": "OK\n", "stderr": "", "code": 0},
-            "compile": {"output": ""}
-        }
-        mock_post.return_value = mock_response
-
-        res = self.client.post(
-            "/api/v1/execute",
-            headers={"X-API-Key": "test-secret-key"},
-            json={"language": "python", "code": "print('OK')"}
-        )
-
-        self.assertEqual(res.status_code, 200)
-        self.assertIn("X-RateLimit-Remaining", res.headers)
-        ServerConfig.RATE_LIMIT_ENABLED = False
-
-    @patch("server.blueprints.executor_api._session.post")
-    def test_execute_multi_file_support(self, mock_post):
-        """Execution request with 'files' array should process multi-file input."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "run": {"stdout": "Multi-file Success\n", "stderr": "", "code": 0},
-            "compile": {"output": ""}
-        }
-        mock_post.return_value = mock_response
-
-        res = self.client.post(
-            "/api/v1/execute",
-            headers={"X-API-Key": "test-secret-key"},
-            json={
-                "language": "python",
-                "files": [
-                    {"name": "main.py", "content": "import helper; helper.greet()"},
-                    {"name": "helper.py", "content": "def greet(): print('Multi-file Success')"}
-                ]
+        with patch.object(executor_api_mod._session, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "run": {"stdout": "OK\n", "stderr": "", "code": 0},
+                "compile": {"output": ""}
             }
-        )
+            mock_post.return_value = mock_response
 
-        self.assertEqual(res.status_code, 200)
-        data = res.get_json()
-        self.assertEqual(data.get("status"), "success")
-        self.assertEqual(data.get("files_executed"), ["main.py", "helper.py"])
+            res = self.client.post(
+                "/api/v1/execute",
+                headers={"X-API-Key": "test-secret-key"},
+                json={"language": "python", "code": "print('OK')"}
+            )
 
-    @patch("server.blueprints.executor_api._session.post")
-    def test_java_public_class_detection(self, mock_post):
+            self.assertEqual(res.status_code, 200)
+            self.assertIn("X-RateLimit-Remaining", res.headers)
+            ServerConfig.RATE_LIMIT_ENABLED = False
+
+    def test_execute_multi_file_support(self):
+        """Execution request with 'files' array should process multi-file input."""
+        with patch.object(executor_api_mod._session, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "run": {"stdout": "Multi-file Success\n", "stderr": "", "code": 0},
+                "compile": {"output": ""}
+            }
+            mock_post.return_value = mock_response
+
+            res = self.client.post(
+                "/api/v1/execute",
+                headers={"X-API-Key": "test-secret-key"},
+                json={
+                    "language": "python",
+                    "files": [
+                        {"name": "main.py", "content": "import helper; helper.greet()"},
+                        {"name": "helper.py", "content": "def greet(): print('Multi-file Success')"}
+                    ]
+                }
+            )
+
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertEqual(data.get("status"), "success")
+            self.assertEqual(data.get("files_executed"), ["main.py", "helper.py"])
+
+    def test_java_public_class_detection(self):
         """Java code with 'public final class Solution' should produce 'Solution.java' filename."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "run": {"stdout": "Hello Java Solution\n", "stderr": "", "code": 0},
-            "compile": {"output": ""}
-        }
-        mock_post.return_value = mock_response
+        with patch.object(executor_api_mod._session, "post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "run": {"stdout": "Hello Java Solution\n", "stderr": "", "code": 0},
+                "compile": {"output": ""}
+            }
+            mock_post.return_value = mock_response
 
-        java_code = "public final class Solution { public static void main(String[] args) {} }"
-        res = self.client.post(
-            "/api/v1/execute",
-            headers={"X-API-Key": "test-secret-key"},
-            json={"language": "java", "code": java_code}
-        )
+            java_code = "public final class Solution { public static void main(String[] args) {} }"
+            res = self.client.post(
+                "/api/v1/execute",
+                headers={"X-API-Key": "test-secret-key"},
+                json={"language": "java", "code": java_code}
+            )
 
-        self.assertEqual(res.status_code, 200)
-        data = res.get_json()
-        self.assertEqual(data.get("filename"), "Solution.java")
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertEqual(data.get("filename"), "Solution.java")
 
 
 if __name__ == "__main__":
