@@ -1,0 +1,68 @@
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
+def _load_env():
+    base_dir = Path(__file__).resolve().parent
+    for candidate in (base_dir / ".env.local", base_dir / ".env"):
+        if candidate.exists():
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key, val = key.strip(), val.strip()
+                if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                    val = val[1:-1]
+                if key:
+                    os.environ.setdefault(key, val)
+            break
+
+
+_load_env()
+
+
+class ServerConfig:
+    """Configuration settings for the Dedicated Code Executor Backend Server on Render."""
+    
+    # API Secret Keys allowed to run code (comma-separated or single secret)
+    _raw_secrets = os.environ.get("SERVER_API_KEYS") or os.environ.get("API_SECRET") or ""
+    API_SECRETS = tuple(s.strip() for s in _raw_secrets.split(",") if s.strip())
+    
+    # Default allowed origins (comma-separated list of domain URLs)
+    _raw_origins = os.environ.get("ALLOWED_ORIGINS", "https://toolpix.pythonanywhere.com,https://uthakkan.in,*")
+    ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
+    # Code Executor Limits & Settings
+    EXECUTOR_MAX_CODE_BYTES = int(os.environ.get("EXECUTOR_MAX_CODE_BYTES", "65536"))  # 64 KB limit
+    EXECUTOR_MAX_OUTPUT_BYTES = int(os.environ.get("EXECUTOR_MAX_OUTPUT_BYTES", "200000"))  # 200 KB limit
+    EXECUTOR_MAX_STDIN_BYTES = int(os.environ.get("EXECUTOR_MAX_STDIN_BYTES", "10000"))
+    EXECUTOR_TIMEOUT_S = int(os.environ.get("EXECUTOR_TIMEOUT_S", "30"))
+
+    # Upstream Piston Engine Base & Execute URLs
+    _raw_piston = (os.environ.get("PISTON_API_URL") or "https://emkc.org/api/v2/piston").rstrip("/")
+    if _raw_piston.endswith("/execute"):
+        PISTON_BASE_URL = _raw_piston[:-8]
+        PISTON_EXECUTE_URL = _raw_piston
+    else:
+        PISTON_BASE_URL = _raw_piston
+        PISTON_EXECUTE_URL = f"{_raw_piston}/execute"
+
+    PISTON_RUNTIMES_URL = f"{PISTON_BASE_URL}/runtimes"
+    PISTON_API_KEY = os.environ.get("PISTON_API_KEY", "").strip()
+
+    # Rate Limiting Configuration (Disabled by default or set to extremely high limit)
+    RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    RATE_LIMIT_WINDOW_S = int(os.environ.get("RATE_LIMIT_WINDOW_S", "60"))
+    RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX_REQUESTS", "10000"))  # 10,000 req/min
+    
+    # Server Metadata
+    SERVER_NAME = "ToolPix Dedicated Code Executor"
+    SERVER_VERSION = "1.2.0"
+    ENVIRONMENT = os.environ.get("RENDER_SERVICE_TYPE", os.environ.get("FLASK_ENV", "production"))
