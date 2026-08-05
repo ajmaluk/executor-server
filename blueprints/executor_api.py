@@ -1,10 +1,11 @@
 import logging
 import os
 import shutil
-import sqlite3
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from flask import Blueprint, jsonify, request
 
@@ -19,6 +20,71 @@ except ImportError:
 
 executor_bp = Blueprint("executor_api", __name__, url_prefix="/api/v1")
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cached binary lookups — resolved once at import, not per-request
+# ---------------------------------------------------------------------------
+_BINARY_CACHE = {}
+_BINARY_CACHE_LOCK = threading.Lock()
+
+
+def _find_binary(*names):
+    """Find a binary by trying multiple names, cache the result."""
+    cache_key = tuple(names)
+    if cache_key in _BINARY_CACHE:
+        return _BINARY_CACHE[cache_key]
+    with _BINARY_CACHE_LOCK:
+        if cache_key in _BINARY_CACHE:
+            return _BINARY_CACHE[cache_key]
+        for name in names:
+            path = shutil.which(name)
+            if path:
+                _BINARY_CACHE[cache_key] = path
+                return path
+        _BINARY_CACHE[cache_key] = None
+        return None
+
+
+# Concurrency limiter — prevent resource exhaustion on small instances.
+_MAX_CONCURRENT_EXECUTIONS = int(os.environ.get("EXECUTOR_MAX_CONCURRENT", "8"))
+_execution_semaphore = threading.Semaphore(_MAX_CONCURRENT_EXECUTIONS)
+
+# Max time (seconds) a request waits in the execution queue before being
+# rejected as busy. Kept well under the gunicorn worker timeout so queued
+# requests cannot pile up and stall worker threads indefinitely.
+_EXECUTION_QUEUE_WAIT_S = ServerConfig.EXECUTOR_QUEUE_WAIT_S
+# Internal sentinel: the request was rejected because the execution queue was full.
+_EXIT_SERVER_BUSY = 429
+
+# Reject JSON bodies far larger than the bounded code/stdin fields they can
+# legally carry. Code is capped at EXECUTOR_MAX_CODE_BYTES and stdin at
+# EXECUTOR_MAX_STDIN_BYTES, so a body bigger than the sum (+ JSON overhead)
+# can only be junk. Kept small to avoid paying for needless JSON parsing.
+_MAX_EXECUTE_BODY_BYTES = (
+    ServerConfig.EXECUTOR_MAX_CODE_BYTES
+    + ServerConfig.EXECUTOR_MAX_STDIN_BYTES
+    + 16384  # JSON keys/escaping/whitespace headroom
+)
+
+# Observable concurrency metrics (per worker process).
+# `rejected` counts requests turned away because the queue was full (never
+# executed) — kept distinct from `failed` (code ran but errored), so the two
+# are not conflated.
+_EXECUTION_STATS_LOCK = threading.Lock()
+_EXECUTION_STATS = {
+    "running": 0,
+    "waiting": 0,
+    "completed": 0,
+    "failed": 0,
+    "timed_out": 0,
+    "rejected": 0,
+}
+
+
+def get_execution_stats():
+    """Return a copy of the live concurrency metrics."""
+    with _EXECUTION_STATS_LOCK:
+        return dict(_EXECUTION_STATS)
 
 # Native Language Registry
 NATIVE_LANGUAGE_REGISTRY = {
@@ -105,123 +171,405 @@ def sanitize_args(args_raw) -> list:
     return []
 
 
-def _execute_sqlite_natively(sql_code: str):
-    """Executes SQLite queries natively using Python's built-in sqlite3 engine."""
-    conn = sqlite3.connect(":memory:")
-    cursor = conn.cursor()
-    output_lines = []
-    
+# Runs SQLite in a fresh Python subprocess so a runaway query (e.g. an unbounded
+# recursive CTE) can be hard-killed by the process-group timeout and can never
+# exhaust CPU/memory inside the server process itself.
+_SQLITE_HELPER_SRC = r"""
+import sqlite3
+import sys
+
+
+def split_statements(sql):
+    # Naive split(";") breaks when a string literal contains a semicolon
+    # (e.g. INSERT INTO t VALUES ('foo;bar')). Track quotes/identifiers so
+    # we only split on a ';' that is outside any string.
+    statements = []
+    current = []
+    i = 0
+    n = len(sql)
+    quote = None  # None | "'" | '"' | '`'
+    in_bracket = False
+    line_comment = False
+    block_comment = False
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if line_comment:
+            current.append(ch)
+            if ch == "\n":
+                line_comment = False
+            i += 1
+            continue
+        if block_comment:
+            current.append(ch)
+            if ch == "*" and nxt == "/":
+                current.append(nxt)
+                i += 2
+                block_comment = False
+                continue
+            i += 1
+            continue
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                if nxt == quote:  # escaped quote ''
+                    current.append(nxt)
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if in_bracket:
+            current.append(ch)
+            if ch == "]":
+                in_bracket = False
+            i += 1
+            continue
+        if ch == "'" or ch == '"' or ch == "`":
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "[":
+            in_bracket = True
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "-" and nxt == "-":
+            line_comment = True
+            current.append(ch)
+            current.append(nxt)
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            block_comment = True
+            current.append(ch)
+            current.append(nxt)
+            i += 2
+            continue
+        if ch == ";":
+            stmt = "".join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    stmt = "".join(current).strip()
+    if stmt:
+        statements.append(stmt)
+    return statements
+
+
+conn = sqlite3.connect(":memory:")
+output_lines = []
+try:
+    for stmt in split_statements(sys.stdin.read()):
+        cursor = conn.cursor()
+        cursor.execute(stmt)
+        if cursor.description:
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+            output_lines.append("Query: %s;" % stmt)
+            output_lines.append(" | ".join(columns))
+            output_lines.append("-" * 30)
+            for row in rows:
+                output_lines.append(" | ".join(str(val) for val in row))
+            output_lines.append("")
+    conn.commit()
+    sys.stdout.write("\n".join(output_lines) if output_lines else "Query executed successfully.")
+except Exception as e:
+    sys.stderr.write("SQLite Error: %s" % e)
+    sys.exit(1)
+"""
+
+
+def _execute_sqlite_natively(sql_code: str, timeout_s: int = ServerConfig.EXECUTOR_TIMEOUT_S):
+    """Executes SQLite queries in an isolated subprocess with a hard timeout.
+
+    The query runs in its own process group, so a runaway query is killed on
+    timeout instead of leaking a thread inside the server. Returns
+    (stdout, stderr, exit_code, stdout_truncated, stderr_truncated).
+    """
+    return _run_process(
+        [sys.executable, "-c", _SQLITE_HELPER_SRC],
+        cwd=tempfile.gettempdir(),
+        stdin_str=sql_code,
+        timeout_s=timeout_s,
+    )
+
+
+def _kill_process_group(proc):
+    """Kill the process and every child it spawned (entire process group)."""
     try:
-        statements = [stmt.strip() for stmt in sql_code.split(";") if stmt.strip()]
-        for stmt in statements:
-            cursor.execute(stmt)
-            if cursor.description:
-                columns = [col[0] for col in cursor.description]
-                rows = cursor.fetchall()
-                output_lines.append(f"Query: {stmt};")
-                output_lines.append(" | ".join(columns))
-                output_lines.append("-" * 30)
-                for row in rows:
-                    output_lines.append(" | ".join(str(val) for val in row))
-                output_lines.append("")
-        
-        conn.commit()
-        conn.close()
-        stdout = "\n".join(output_lines) if output_lines else "Query executed successfully."
-        return stdout, "", 0
-    except Exception as e:
-        conn.close()
-        return "", f"SQLite Error: {str(e)}", 1
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
+def _read_capped(proc, timeout_s, max_output_bytes):
+    """Read a subprocess's stdout/stderr with a hard byte cap and timeout.
+
+    Returns (stdout_bytes, stderr_bytes, timed_out, out_truncated, err_truncated).
+    Output beyond ``max_output_bytes`` per stream is discarded (never buffered),
+    so a runaway program printing gigabytes cannot exhaust server memory.
+    Reads use ``select`` so a stream that stops producing output never blocks.
+    """
+    import select
+
+    start = time.time()
+    fd_map = {proc.stdout.fileno(): "out", proc.stderr.fileno(): "err"}
+    bufs = {"out": [], "err": []}
+    lens = {"out": 0, "err": 0}
+    truncated = {"out": False, "err": False}
+
+    def feed(key, data):
+        if not data:
+            return
+        space = max_output_bytes - lens[key]
+        if space <= 0:
+            truncated[key] = True
+            return
+        if len(data) > space:
+            truncated[key] = True
+            data = data[:space]
+        bufs[key].append(data)
+        lens[key] += len(data)
+
+    def drain(stream):
+        # Non-blocking drain after the process has exited.
+        while True:
+            try:
+                chunk = stream.read(65536)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            feed(fd_map[stream.fileno()], chunk)
+
+    while True:
+        remaining = timeout_s - (time.time() - start)
+        if remaining <= 0:
+            _kill_process_group(proc)
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            out = b"".join(bufs["out"]).decode("utf-8", errors="replace")
+            err = b"".join(bufs["err"]).decode("utf-8", errors="replace")
+            return out, err, True, truncated["out"], truncated["err"]
+
+        if proc.poll() is not None:
+            drain(proc.stdout)
+            drain(proc.stderr)
+            proc.wait()
+            break
+
+        rlist, _, _ = select.select([proc.stdout, proc.stderr], [], [], min(remaining, 0.5))
+        for stream in rlist:
+            try:
+                chunk = os.read(stream.fileno(), 65536)
+            except (OSError, ValueError):
+                chunk = b""
+            if not chunk:
+                continue
+            feed(fd_map[stream.fileno()], chunk)
+
+    out = b"".join(bufs["out"]).decode("utf-8", errors="replace")
+    err = b"".join(bufs["err"]).decode("utf-8", errors="replace")
+    return out, err, False, truncated["out"], truncated["err"]
+
+
+def _run_process(cmd, cwd, stdin_str="", timeout_s=30, max_output_bytes=None):
+    """Run a subprocess via Popen with a hard timeout and bounded output.
+
+    Returns (stdout, stderr, returncode, stdout_truncated, stderr_truncated).
+    The process group is killed if it exceeds the timeout (prevents orphaned
+    child processes). Output is decoded as UTF-8 with replacement, so non-UTF-8
+    output can never crash the request. Output is capped at
+    ``max_output_bytes`` per stream while reading, so huge outputs never
+    accumulate in memory.
+    """
+    if max_output_bytes is None:
+        max_output_bytes = ServerConfig.EXECUTOR_MAX_OUTPUT_BYTES
+    if not stdin_str:
+        stdin_str = ""
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return "", f"Failed to start process: {e}", 127, False, False
+
+    if stdin_str:
+        try:
+            proc.stdin.write(stdin_str.encode("utf-8", errors="replace"))
+        except (BrokenPipeError, OSError):
+            pass
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+
+    stdout, stderr, timed_out, out_trunc, err_trunc = _read_capped(
+        proc, timeout_s, max_output_bytes
+    )
+    if timed_out:
+        err = (stderr + f"Execution timed out after {timeout_s} seconds.") if stderr else f"Execution timed out after {timeout_s} seconds."
+        return stdout, err, -1, out_trunc, True
+    return stdout, stderr, proc.returncode, out_trunc, err_trunc
+
+
+def _execute_in_tempdir(canonical_key, code, stdin_str, run_cmd, compile_cmd, timeout_s):
+    """Run interpreted/compiled code inside an isolated temporary directory.
+
+    Returns (stdout, stderr, exit_code). The compile step gets half the timeout
+    budget; the run step gets whatever remains.
+    """
+    ext = NATIVE_LANGUAGE_REGISTRY[canonical_key]["extension"]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src_path = os.path.join(tmpdir, f"main{ext}")
+        with open(src_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        def _resolve(cmd):
+            resolved = []
+            for i, part in enumerate(cmd):
+                if part == f"main{ext}":
+                    resolved.append(src_path)
+                elif canonical_key in ("c", "cpp") and part == "main.out":
+                    resolved.append(os.path.join(tmpdir, "main.out"))
+                elif i == 0:
+                    resolved.append(part)  # binary path stays as-is
+                else:
+                    resolved.append(part)
+            return resolved
+
+        run_cmd_full = _resolve(run_cmd)
+        compile_cmd_full = _resolve(compile_cmd) if compile_cmd else None
+
+        start_ts = time.time()
+
+        # Step 1: Compile if required — uses half the timeout for compilation
+        compile_output = ""
+        if compile_cmd_full:
+            compile_timeout = max(5, timeout_s // 2)
+            comp_out, comp_err, comp_rc, _, _ = _run_process(
+                compile_cmd_full, cwd=tmpdir, timeout_s=compile_timeout
+            )
+            compile_output = comp_out + comp_err
+            if comp_rc != 0:
+                return "", f"Compilation Failed:\n{compile_output}", comp_rc, False, False
+
+        # Step 2: Execute — give it the full remaining time budget
+        elapsed = time.time() - start_ts
+        exec_timeout = max(5, timeout_s - int(elapsed))
+
+        return _run_process(
+            run_cmd_full, cwd=tmpdir, stdin_str=stdin_str, timeout_s=exec_timeout
+        )
+
+
+def _record_result(result):
+    """Classify an execution result into the concurrency metrics."""
+    with _EXECUTION_STATS_LOCK:
+        rc = result[2] if isinstance(result, tuple) else -1
+        if rc == 0:
+            _EXECUTION_STATS["completed"] += 1
+        elif rc == -1:
+            _EXECUTION_STATS["timed_out"] += 1
+        else:
+            _EXECUTION_STATS["failed"] += 1
 
 
 def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, args: list, timeout_s: int):
     """Executes code using native server interpreters and compilers inside a temporary directory sandbox."""
-    if canonical_key == "sql":
-        return _execute_sqlite_natively(code)
+    # Resolve compile/run commands before acquiring the semaphore
+    compile_cmd = None
+    run_cmd = []
+    spec = NATIVE_LANGUAGE_REGISTRY[canonical_key]
+    ext = spec["extension"]
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        spec = NATIVE_LANGUAGE_REGISTRY[canonical_key]
-        ext = spec["extension"]
-        src_path = os.path.join(tmpdir, f"main{ext}")
+    if canonical_key == "python":
+        run_cmd = [sys.executable, f"main{ext}"] + args
+    elif canonical_key == "javascript":
+        node_path = _find_binary("node", "nodejs")
+        if not node_path:
+            return "", "JavaScript Runtime Error: Node.js is not installed on server.", 127, False, False
+        run_cmd = [node_path, f"main{ext}"] + args
+    elif canonical_key == "bash":
+        sh_path = _find_binary("bash", "sh")
+        if not sh_path:
+            return "", "Bash Error: bash or sh is not installed on server.", 127, False, False
+        run_cmd = [sh_path, f"main{ext}"] + args
+    elif canonical_key == "c":
+        gcc_path = _find_binary("gcc", "clang")
+        if not gcc_path:
+            return "", "C Compiler Error: gcc or clang is not installed on server.", 127, False, False
+        compile_cmd = [gcc_path, f"main{ext}", "-o", "main.out"]
+        run_cmd = ["main.out"] + args
+    elif canonical_key == "cpp":
+        gpp_path = _find_binary("g++", "clang++")
+        if not gpp_path:
+            return "", "C++ Compiler Error: g++ or clang++ is not installed on server.", 127, False, False
+        compile_cmd = [gpp_path, f"main{ext}", "-o", "main.out"]
+        run_cmd = ["main.out"] + args
+    elif canonical_key == "php":
+        php_path = _find_binary("php")
+        if not php_path:
+            return "", "PHP Error: php CLI is not installed on server.", 127, False, False
+        run_cmd = [php_path, f"main{ext}"] + args
+    elif canonical_key == "ruby":
+        ruby_path = _find_binary("ruby")
+        if not ruby_path:
+            return "", "Ruby Error: ruby is not installed on server.", 127, False, False
+        run_cmd = [ruby_path, f"main{ext}"] + args
+    elif canonical_key == "perl":
+        perl_path = _find_binary("perl")
+        if not perl_path:
+            return "", "Perl Error: perl is not installed on server.", 127, False, False
+        run_cmd = [perl_path, f"main{ext}"] + args
 
-        with open(src_path, "w", encoding="utf-8") as f:
-            f.write(code)
+    # Queue up: wait up to _EXECUTION_QUEUE_WAIT_S for a free execution slot.
+    with _EXECUTION_STATS_LOCK:
+        _EXECUTION_STATS["waiting"] += 1
+    acquired = _execution_semaphore.acquire(timeout=_EXECUTION_QUEUE_WAIT_S)
+    if not acquired:
+        with _EXECUTION_STATS_LOCK:
+            _EXECUTION_STATS["waiting"] -= 1
+            _EXECUTION_STATS["rejected"] += 1
+        return "", "Server busy: too many concurrent executions. Try again later.", _EXIT_SERVER_BUSY, False, False
 
-        compile_cmd = None
-        run_cmd = []
-
-        if canonical_key == "python":
-            run_cmd = [sys.executable, src_path] + args
-
-        elif canonical_key == "javascript":
-            node_path = shutil.which("node") or shutil.which("nodejs")
-            if not node_path:
-                return "", "JavaScript Runtime Error: Node.js is not installed on server.", 127
-            run_cmd = [node_path, src_path] + args
-
-        elif canonical_key == "bash":
-            sh_path = shutil.which("bash") or shutil.which("sh")
-            run_cmd = [sh_path, src_path] + args
-
-        elif canonical_key == "c":
-            gcc_path = shutil.which("gcc") or shutil.which("clang")
-            if not gcc_path:
-                return "", "C Compiler Error: gcc or clang is not installed on server.", 127
-            bin_path = os.path.join(tmpdir, "main.out")
-            compile_cmd = [gcc_path, src_path, "-o", bin_path]
-            run_cmd = [bin_path] + args
-
-        elif canonical_key == "cpp":
-            gpp_path = shutil.which("g++") or shutil.which("clang++")
-            if not gpp_path:
-                return "", "C++ Compiler Error: g++ or clang++ is not installed on server.", 127
-            bin_path = os.path.join(tmpdir, "main.out")
-            compile_cmd = [gpp_path, src_path, "-o", bin_path]
-            run_cmd = [bin_path] + args
-
-        elif canonical_key == "php":
-            php_path = shutil.which("php")
-            if not php_path:
-                return "", "PHP Error: php CLI is not installed on server.", 127
-            run_cmd = [php_path, src_path] + args
-
-        elif canonical_key == "ruby":
-            ruby_path = shutil.which("ruby")
-            if not ruby_path:
-                return "", "Ruby Error: ruby is not installed on server.", 127
-            run_cmd = [ruby_path, src_path] + args
-
-        elif canonical_key == "perl":
-            perl_path = shutil.which("perl")
-            if not perl_path:
-                return "", "Perl Error: perl is not installed on server.", 127
-            run_cmd = [perl_path, src_path] + args
-
-        # Step 1: Compile if compilation step is required
-        compile_output = ""
-        if compile_cmd:
-            comp_proc = subprocess.run(
-                compile_cmd,
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s
+    with _EXECUTION_STATS_LOCK:
+        _EXECUTION_STATS["waiting"] -= 1
+        _EXECUTION_STATS["running"] += 1
+    try:
+        if canonical_key == "sql":
+            result = _execute_sqlite_natively(code, timeout_s)
+        else:
+            result = _execute_in_tempdir(
+                canonical_key, code, stdin_str, run_cmd, compile_cmd, timeout_s
             )
-            compile_output = comp_proc.stdout + comp_proc.stderr
-            if comp_proc.returncode != 0:
-                return "", f"Compilation Failed:\n{compile_output}", comp_proc.returncode
-
-        # Step 2: Execute runner process
-        run_proc = subprocess.run(
-            run_cmd,
-            cwd=tmpdir,
-            input=stdin_str,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s
-        )
-
-        return run_proc.stdout, run_proc.stderr, run_proc.returncode
+        _record_result(result)
+        return result
+    finally:
+        with _EXECUTION_STATS_LOCK:
+            _EXECUTION_STATS["running"] -= 1
+        _execution_semaphore.release()
 
 
 @executor_bp.route("/languages", methods=["GET", "OPTIONS"])
@@ -259,8 +607,16 @@ def get_language_detail(lang_query):
 @apply_rate_limit
 def execute_code():
     """Executes code natively on the server without external API dependencies."""
+    # Reject oversized bodies before parsing JSON — the useful fields (code, stdin)
+    # are strictly bounded, so anything larger is wasted CPU on JSON parsing.
+    if request.content_length and request.content_length > _MAX_EXECUTE_BODY_BYTES:
+        return jsonify({
+            "error": "Payload Too Large",
+            "message": f"Request body exceeds limit of {_MAX_EXECUTE_BODY_BYTES} bytes."
+        }), 413
+
     data = request.get_json(silent=True) or {}
-    
+
     lang_input = (data.get("language") or "").strip()
     code_raw = data.get("code")
     if not code_raw and isinstance(data.get("files"), list) and len(data["files"]) > 0:
@@ -289,12 +645,12 @@ def execute_code():
             "message": f"Code size ({code_bytes} bytes) exceeds limit of {ServerConfig.EXECUTOR_MAX_CODE_BYTES} bytes."
         }), 413
 
-    # Process STDIN
+    # Process STDIN — truncate by bytes, not characters (multi-byte safety)
     stdin_str = str(stdin_raw)
     stdin_bytes = len(stdin_str.encode("utf-8"))
     stdin_truncated = False
     if stdin_bytes > ServerConfig.EXECUTOR_MAX_STDIN_BYTES:
-        stdin_str = stdin_str[:ServerConfig.EXECUTOR_MAX_STDIN_BYTES]
+        stdin_str = stdin_str.encode("utf-8")[:ServerConfig.EXECUTOR_MAX_STDIN_BYTES].decode("utf-8", errors="ignore")
         stdin_truncated = True
 
     sanitized_args = sanitize_args(args_raw)
@@ -302,7 +658,7 @@ def execute_code():
 
     start_t = time.time()
     try:
-        stdout, stderr, exit_code = _execute_native_subprocess(
+        stdout, stderr, exit_code, stdout_truncated, stderr_truncated = _execute_native_subprocess(
             canonical_key=canonical_key,
             code=code_str,
             stdin_str=stdin_str,
@@ -311,30 +667,34 @@ def execute_code():
         )
 
         elapsed_ms = round((time.time() - start_t) * 1000, 2)
-        output = stdout + stderr
 
-        output_truncated = False
-        if len(output.encode("utf-8")) > ServerConfig.EXECUTOR_MAX_OUTPUT_BYTES:
-            output = output[:ServerConfig.EXECUTOR_MAX_OUTPUT_BYTES] + "\n...[Output Truncated]"
-            output_truncated = True
+        if exit_code == _EXIT_SERVER_BUSY:
+            return jsonify({
+                "status": "error",
+                "error": "Service Unavailable",
+                "message": "Server busy: too many concurrent executions. Try again later."
+            }), 503
 
-        return jsonify({
-            "status": "success",
+        is_success = exit_code == 0
+        response_body = {
+            "status": "success" if is_success else "error",
             "engine": "native_standalone",
             "language": canonical_key,
             "runtime": spec["language"],
             "filename": f"main{spec['extension']}",
-            "output": output,
+            "output": (stdout + "\n" + stderr) if (stdout and stderr) else (stdout + stderr),
             "stdout": stdout,
             "stderr": stderr,
             "exit_code": exit_code,
             "execution_time_ms": elapsed_ms,
             "stdin_truncated": stdin_truncated,
-            "output_truncated": output_truncated
-        }), 200
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated
+        }
+        if not is_success:
+            response_body["error"] = stderr.strip() or f"Process exited with code {exit_code}"
+        return jsonify(response_body), 200
 
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Timeout", "message": f"Code execution timed out after {ServerConfig.EXECUTOR_TIMEOUT_S} seconds."}), 504
-    except Exception as e:
+    except Exception:
         logger.exception("Native code execution error")
-        return jsonify({"error": "Internal Server Error", "message": str(e)}), 500
+        return jsonify({"error": "Internal Server Error", "message": "An unexpected server error occurred during execution."}), 500

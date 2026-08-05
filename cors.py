@@ -54,7 +54,16 @@ def setup_cors_headers(response):
     if is_allowed_origin(origin):
         response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-API-Key, Accept, Origin"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-API-Key, X-Executor-Key, Accept, Origin"
         response.headers["Access-Control-Max-Age"] = "86400"
-    
+
+    # Security headers applied to every response (CORS or not)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-XSS-Protection", "0")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if not request.headers.get("Origin"):
+        response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+
     return response

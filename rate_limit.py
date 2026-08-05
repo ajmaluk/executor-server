@@ -17,10 +17,26 @@ class RateLimiter:
         self.max_requests = max_requests
         self._lock = threading.Lock()
         self._requests = defaultdict(lambda: [0.0, 0])
+        self._last_cleanup = time.time()
+        self._cleanup_interval = max(window_seconds * 2, 120)  # Clean every 2× window or 2min
+
+    def _cleanup_stale(self):
+        """Remove entries older than 2× window to prevent unbounded memory growth."""
+        now = time.time()
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+        self._last_cleanup = now
+        stale_threshold = now - (self.window_seconds * 2)
+        stale_keys = [k for k, v in self._requests.items() if v[0] < stale_threshold]
+        for k in stale_keys:
+            del self._requests[k]
 
     def is_allowed(self, identifier: str) -> tuple[bool, int, int]:
         now = time.time()
         with self._lock:
+            # Periodic cleanup
+            self._cleanup_stale()
+
             start_time, count = self._requests[identifier]
 
             if now - start_time >= self.window_seconds:

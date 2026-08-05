@@ -73,5 +73,6 @@ application = app
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5001))
-    logger.info("Starting Code Executor Backend Server locally on port %d...", port)
-    app.run(host="0.0.0.0", port=port, debug=True)
+    debug = os.environ.get("FLASK_DEBUG", "0") in ("1", "true", "True")
+    logger.info("Starting Code Executor Backend Server locally on port %d (debug=%s)...", port, debug)
+    app.run(host="0.0.0.0", port=port, debug=debug)

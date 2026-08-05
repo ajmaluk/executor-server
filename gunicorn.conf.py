@@ -8,7 +8,7 @@ bind = f"0.0.0.0:{os.environ.get('PORT', '5001')}"
 # gthread worker class enables non-blocking multithreaded request handling
 worker_class = "gthread"
 workers = int(os.environ.get("WEB_CONCURRENCY", "2"))
-threads = int(os.environ.get("PYTHON_GET_THREADS", "10"))
+threads = int(os.environ.get("GUNICORN_THREADS", os.environ.get("PYTHON_GET_THREADS", "10")))
 
 # HTTP Keep-Alive settings for persistent connections
 keepalive = 65

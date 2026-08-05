@@ -41,7 +41,7 @@ class ServerConfig:
     ).strip()
     
     # Default allowed origins (comma-separated list of domain URLs)
-    _raw_origins = os.environ.get("ALLOWED_ORIGINS", "https://toolpix.pythonanywhere.com,https://uthakkan.in,*")
+    _raw_origins = os.environ.get("ALLOWED_ORIGINS", "https://toolpix.pythonanywhere.com,https://uthakkan.in")
     ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
     # Native Code Executor Limits & Settings
@@ -49,6 +49,8 @@ class ServerConfig:
     EXECUTOR_MAX_OUTPUT_BYTES = int(os.environ.get("EXECUTOR_MAX_OUTPUT_BYTES", "200000"))  # 200 KB limit
     EXECUTOR_MAX_STDIN_BYTES = int(os.environ.get("EXECUTOR_MAX_STDIN_BYTES", "10000"))
     EXECUTOR_TIMEOUT_S = int(os.environ.get("EXECUTOR_TIMEOUT_S", "30"))
+    # Max seconds a request waits in the execution queue before being rejected as busy (HTTP 503).
+    EXECUTOR_QUEUE_WAIT_S = int(os.environ.get("EXECUTOR_QUEUE_WAIT_S", "15"))
 
     # Rate Limiting Configuration (Disabled by default: RATE_LIMIT_ENABLED=false)
     RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -56,6 +58,11 @@ class ServerConfig:
     RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX_REQUESTS", "10000"))  # 10,000 req/min
     
     # Server Metadata
-    SERVER_NAME = "ToolPix Native Standalone Code Executor"
+    # NOTE: named SERVICE_NAME (not SERVER_NAME) on purpose — Flask copies every
+    # UPPERCASE attribute of ServerConfig into app.config via from_object(), and
+    # Flask's own SERVER_NAME config is a HOSTNAME used for URL/host matching.
+    # Leaking this display label into that key 404s every request whose Host
+    # header differs from the label.
+    SERVICE_NAME = "ToolPix Native Standalone Code Executor"
     SERVER_VERSION = "2.1.0"
     ENVIRONMENT = os.environ.get("RENDER_SERVICE_TYPE", os.environ.get("FLASK_ENV", "production"))

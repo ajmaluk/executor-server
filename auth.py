@@ -17,7 +17,7 @@ def extract_api_key_from_request():
     Supports:
       - X-API-Key: <key>
       - Authorization: Bearer <key>
-      - Query Parameter: ?api_key=<key> (Optional fallback)
+    (Query-string keys are intentionally NOT supported — they leak into logs.)
     """
     key = request.headers.get("X-API-Key")
     if key:
@@ -26,10 +26,6 @@ def extract_api_key_from_request():
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:].strip()
-
-    query_key = request.args.get("api_key")
-    if query_key:
-        return query_key.strip()
 
     return None
 

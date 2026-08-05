@@ -1,6 +1,6 @@
 # ToolPix Standalone Code Executor Backend Server (100% Native & Free)
 
-This is a standalone, high-performance **Native Code Execution Engine** designed for continuous deployment on [Render](https://render.com). It runs 100% natively on your server with **zero external API dependencies (No Piston API key required, 100% free forever)**.
+This is a standalone, high-performance **Native Code Execution Engine** designed for continuous deployment on [Render](https://render.com). It runs 100% natively on your server with **zero external API dependencies (no third-party API keys required, 100% free forever)**.
 
 ---
 
@@ -8,7 +8,7 @@ This is a standalone, high-performance **Native Code Execution Engine** designed
 
 1. **100% Native & Self-Contained Engine**:
    - Compiles and runs code snippets natively on the server (Python, JavaScript/Node.js, Bash, C, C++, PHP, Ruby, Perl, SQLite) inside isolated temporary sandboxes.
-   - Zero external third-party API dependencies (No Piston API keys or paid external limits!).
+   - Zero external third-party API dependencies (no third-party API keys or paid external limits!).
    - In-memory SQLite execution engine built-in.
 
 2. **API Secret Authentication**:

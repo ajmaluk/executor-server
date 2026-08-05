@@ -28,7 +28,7 @@ def _get_memory_usage_mb():
 def index():
     """Root service information endpoint."""
     return jsonify({
-        "service": ServerConfig.SERVER_NAME,
+        "service": ServerConfig.SERVICE_NAME,
         "status": "online",
         "engine": "native_standalone",
         "version": ServerConfig.SERVER_VERSION,
@@ -54,7 +54,7 @@ def health_check():
 
     return jsonify({
         "status": "healthy",
-        "service": ServerConfig.SERVER_NAME,
+        "service": ServerConfig.SERVICE_NAME,
         "engine": "native_standalone",
         "version": ServerConfig.SERVER_VERSION,
         "environment": ServerConfig.ENVIRONMENT,
@@ -70,7 +70,7 @@ def readiness_check():
     """Readiness probe testing server availability."""
     return jsonify({
         "status": "ready",
-        "service": ServerConfig.SERVER_NAME,
+        "service": ServerConfig.SERVICE_NAME,
         "engine": "native_standalone"
     }), 200
 
@@ -78,9 +78,16 @@ def readiness_check():
 @health_bp.route("/api/v1/status", methods=["GET"])
 def api_status():
     """Detailed Code Executor configuration status."""
+    try:
+        from blueprints.executor_api import _MAX_CONCURRENT_EXECUTIONS, get_execution_stats
+        concurrency_info = {"max_concurrent": _MAX_CONCURRENT_EXECUTIONS}
+        concurrency_info.update(get_execution_stats())
+    except ImportError:
+        concurrency_info = {"max_concurrent": "unknown"}
+
     return jsonify({
         "status": "ok",
-        "service": ServerConfig.SERVER_NAME,
+        "service": ServerConfig.SERVICE_NAME,
         "engine": "native_standalone",
         "version": ServerConfig.SERVER_VERSION,
         "environment": ServerConfig.ENVIRONMENT,
@@ -91,6 +98,7 @@ def api_status():
             "max_output_bytes": ServerConfig.EXECUTOR_MAX_OUTPUT_BYTES,
             "timeout_s": ServerConfig.EXECUTOR_TIMEOUT_S
         },
+        "concurrency": concurrency_info,
         "allowed_origin_rules": [
             "Configured ALLOWED_ORIGINS",
             "toolpix.pythonanywhere.com",
