@@ -594,8 +594,7 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
         if not go_path:
             return "", "Go Error: go binary is not installed on server.", 127, False, False
         filename = "main.go"
-        compile_cmd = [go_path, "build", "-p", "1", "-ldflags", "-s -w", "-o", "main.out", filename]
-        run_cmd = ["main.out"] + args
+        run_cmd = [go_path, "run", filename] + args
     elif canonical_key == "rust":
         rustc_path = _find_binary("rustc")
         if not rustc_path:
