@@ -2,13 +2,13 @@ import os
 
 # Gunicorn Configuration for Scalable Deployment on Render
 
-bind = f"0.0.0.0:{os.environ.get('PORT', '5001')}"
+bind = f"0.0.0.0:{os.environ.get('PORT', '10000')}"
 
 # Worker processes & threading model
 # gthread worker class enables non-blocking multithreaded request handling
 worker_class = "gthread"
-workers = int(os.environ.get("WEB_CONCURRENCY", "2"))
-threads = int(os.environ.get("GUNICORN_THREADS", os.environ.get("PYTHON_GET_THREADS", "10")))
+workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+threads = int(os.environ.get("GUNICORN_THREADS", "8"))
 
 # HTTP Keep-Alive settings for persistent connections
 keepalive = 65

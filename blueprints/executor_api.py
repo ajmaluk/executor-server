@@ -30,7 +30,7 @@ _BINARY_CACHE_LOCK = threading.Lock()
 
 
 def _find_binary(*names):
-    """Find a binary by trying multiple names, cache the result."""
+    """Find a binary by trying multiple names and fallback system paths, cache the result."""
     cache_key = tuple(names)
     if cache_key in _BINARY_CACHE:
         return _BINARY_CACHE[cache_key]
@@ -42,6 +42,12 @@ def _find_binary(*names):
             if path:
                 _BINARY_CACHE[cache_key] = path
                 return path
+            # Fallback search in standard system locations (e.g. Docker container paths)
+            for prefix in ("/usr/bin", "/usr/local/bin", "/bin", "/usr/lib/jvm/default-java/bin", "/usr/lib/jvm/java-17-openjdk-amd64/bin"):
+                candidate = os.path.join(prefix, name)
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    _BINARY_CACHE[cache_key] = candidate
+                    return candidate
         _BINARY_CACHE[cache_key] = None
         return None
 
