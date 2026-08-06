@@ -8,7 +8,8 @@ ENV PYTHONUNBUFFERED=1 \
     GOCACHE=/tmp/gocache \
     GOTMPDIR=/tmp \
     GOMAXPROCS=1 \
-    CGO_ENABLED=0
+    CGO_ENABLED=0 \
+    GO111MODULE=off
 
 # Install essential runtime tools & compilers in a single layer with apt cache cleanup
 RUN apt-get update && apt-get install -y --no-install-recommends \
