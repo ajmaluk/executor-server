@@ -512,10 +512,10 @@ def _execute_in_tempdir(canonical_key, code, stdin_str, run_cmd, compile_cmd, ti
 
         start_ts = time.time()
 
-        # Step 1: Compile if required — uses half the timeout for compilation
+        # Step 1: Compile if required — give compilation up to max(20, timeout_s - 5) seconds
         compile_output = ""
         if compile_cmd_full:
-            compile_timeout = max(5, timeout_s // 2)
+            compile_timeout = max(20, timeout_s - 5)
             comp_out, comp_err, comp_rc, _, _ = _run_process(
                 compile_cmd_full, cwd=tmpdir, timeout_s=compile_timeout
             )
