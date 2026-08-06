@@ -448,10 +448,19 @@ def _run_process(cmd, cwd, stdin_str="", timeout_s=30, max_output_bytes=None):
     if not stdin_str:
         stdin_str = ""
 
+    env = dict(os.environ)
+    env.update({
+        "GOMAXPROCS": "1",
+        "CGO_ENABLED": "0",
+        "GODEBUG": "madvdontneed=1",
+        "GO111MODULE": "off",
+    })
+
     try:
         proc = subprocess.Popen(
             cmd,
             cwd=cwd,
+            env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
