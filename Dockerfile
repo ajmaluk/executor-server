@@ -7,7 +7,8 @@ ENV PYTHONUNBUFFERED=1 \
     JAVA_HOME=/usr/lib/jvm/default-java \
     GOCACHE=/tmp/gocache \
     GOTMPDIR=/tmp \
-    GOMAXPROCS=1
+    GOMAXPROCS=1 \
+    CGO_ENABLED=0
 
 # Install essential runtime tools & compilers in a single layer with apt cache cleanup
 RUN apt-get update && apt-get install -y --no-install-recommends \
