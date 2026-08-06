@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -18,7 +19,7 @@ except ImportError:
     from server.config import ServerConfig
     from server.rate_limit import apply_rate_limit
 
-executor_bp = Blueprint("executor_api", __name__, url_prefix="/api/v1")
+executor_bp = Blueprint("executor_api", __name__)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,36 @@ NATIVE_LANGUAGE_REGISTRY = {
         "extension": ".cpp",
         "aliases": ["c++", "cxx", "g++"],
         "example": '#include <iostream>\nint main() {\n    std::cout << "Hello from Native C++!" << std::endl;\n    return 0;\n}'
+    },
+    "java": {
+        "language": "java",
+        "extension": ".java",
+        "aliases": ["java", "jdk"],
+        "example": 'public class Main {\n    public static void main(String[] args) {\n        System.out.println("Hello from Native Java!");\n    }\n}'
+    },
+    "go": {
+        "language": "go",
+        "extension": ".go",
+        "aliases": ["go", "golang"],
+        "example": 'package main\nimport "fmt"\nfunc main() {\n    fmt.Println("Hello from Native Go!")\n}'
+    },
+    "rust": {
+        "language": "rust",
+        "extension": ".rs",
+        "aliases": ["rust", "rs"],
+        "example": 'fn main() {\n    println!("Hello from Native Rust!");\n}'
+    },
+    "swift": {
+        "language": "swift",
+        "extension": ".swift",
+        "aliases": ["swift"],
+        "example": 'print("Hello from Native Swift!")'
+    },
+    "kotlin": {
+        "language": "kotlin",
+        "extension": ".kt",
+        "aliases": ["kt", "kotlin"],
+        "example": 'fun main() {\n    println("Hello from Native Kotlin!")\n}'
     },
     "php": {
         "language": "php",
@@ -385,6 +416,14 @@ def _read_capped(proc, timeout_s, max_output_bytes):
 
     out = b"".join(bufs["out"]).decode("utf-8", errors="replace")
     err = b"".join(bufs["err"]).decode("utf-8", errors="replace")
+    try:
+        proc.stdout.close()
+    except Exception:
+        pass
+    try:
+        proc.stderr.close()
+    except Exception:
+        pass
     return out, err, False, truncated["out"], truncated["err"]
 
 
@@ -434,25 +473,28 @@ def _run_process(cmd, cwd, stdin_str="", timeout_s=30, max_output_bytes=None):
     return stdout, stderr, proc.returncode, out_trunc, err_trunc
 
 
-def _execute_in_tempdir(canonical_key, code, stdin_str, run_cmd, compile_cmd, timeout_s):
+def _execute_in_tempdir(canonical_key, code, stdin_str, run_cmd, compile_cmd, timeout_s, filename=None):
     """Run interpreted/compiled code inside an isolated temporary directory.
 
     Returns (stdout, stderr, exit_code). The compile step gets half the timeout
     budget; the run step gets whatever remains.
     """
     ext = NATIVE_LANGUAGE_REGISTRY[canonical_key]["extension"]
+    filename = filename or f"main{ext}"
     with tempfile.TemporaryDirectory() as tmpdir:
-        src_path = os.path.join(tmpdir, f"main{ext}")
+        src_path = os.path.join(tmpdir, filename)
         with open(src_path, "w", encoding="utf-8") as f:
             f.write(code)
 
         def _resolve(cmd):
             resolved = []
             for i, part in enumerate(cmd):
-                if part == f"main{ext}":
+                if part == filename or part == f"main{ext}":
                     resolved.append(src_path)
-                elif canonical_key in ("c", "cpp") and part == "main.out":
+                elif canonical_key in ("c", "cpp", "rust") and part == "main.out":
                     resolved.append(os.path.join(tmpdir, "main.out"))
+                elif canonical_key == "kotlin" and part == "main.jar":
+                    resolved.append(os.path.join(tmpdir, "main.jar"))
                 elif i == 0:
                     resolved.append(part)  # binary path stays as-is
                 else:
@@ -503,46 +545,86 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
     run_cmd = []
     spec = NATIVE_LANGUAGE_REGISTRY[canonical_key]
     ext = spec["extension"]
+    filename = f"main{ext}"
 
     if canonical_key == "python":
-        run_cmd = [sys.executable, f"main{ext}"] + args
+        run_cmd = [sys.executable, filename] + args
     elif canonical_key == "javascript":
         node_path = _find_binary("node", "nodejs")
         if not node_path:
             return "", "JavaScript Runtime Error: Node.js is not installed on server.", 127, False, False
-        run_cmd = [node_path, f"main{ext}"] + args
+        run_cmd = [node_path, filename] + args
     elif canonical_key == "bash":
         sh_path = _find_binary("bash", "sh")
         if not sh_path:
             return "", "Bash Error: bash or sh is not installed on server.", 127, False, False
-        run_cmd = [sh_path, f"main{ext}"] + args
+        run_cmd = [sh_path, filename] + args
     elif canonical_key == "c":
         gcc_path = _find_binary("gcc", "clang")
         if not gcc_path:
             return "", "C Compiler Error: gcc or clang is not installed on server.", 127, False, False
-        compile_cmd = [gcc_path, f"main{ext}", "-o", "main.out"]
+        compile_cmd = [gcc_path, filename, "-o", "main.out"]
         run_cmd = ["main.out"] + args
     elif canonical_key == "cpp":
         gpp_path = _find_binary("g++", "clang++")
         if not gpp_path:
             return "", "C++ Compiler Error: g++ or clang++ is not installed on server.", 127, False, False
-        compile_cmd = [gpp_path, f"main{ext}", "-o", "main.out"]
+        compile_cmd = [gpp_path, filename, "-o", "main.out"]
         run_cmd = ["main.out"] + args
+    elif canonical_key == "java":
+        javac_path = _find_binary("javac")
+        java_path = _find_binary("java")
+        if not javac_path or not java_path:
+            return "", "Java Compiler Error: javac or java JDK is not installed on server.", 127, False, False
+        class_match = re.search(r"public\s+class\s+([A-Za-z_][A-Za-z0-9_]*)", code)
+        if not class_match:
+            class_match = re.search(r"class\s+([A-Za-z_][A-Za-z0-9_]*)", code)
+        class_name = class_match.group(1) if class_match else "Main"
+        filename = f"{class_name}.java"
+        compile_cmd = [javac_path, filename]
+        run_cmd = [java_path, class_name] + args
+    elif canonical_key == "go":
+        go_path = _find_binary("go")
+        if not go_path:
+            return "", "Go Error: go binary is not installed on server.", 127, False, False
+        filename = "main.go"
+        run_cmd = [go_path, "run", filename] + args
+    elif canonical_key == "rust":
+        rustc_path = _find_binary("rustc")
+        if not rustc_path:
+            return "", "Rust Compiler Error: rustc is not installed on server.", 127, False, False
+        filename = "main.rs"
+        compile_cmd = [rustc_path, filename, "-o", "main.out"]
+        run_cmd = ["main.out"] + args
+    elif canonical_key == "swift":
+        swift_path = _find_binary("swift", "swiftc")
+        if not swift_path:
+            return "", "Swift Error: swift binary is not installed on server.", 127, False, False
+        filename = "main.swift"
+        run_cmd = [swift_path, filename] + args
+    elif canonical_key == "kotlin":
+        kotlinc_path = _find_binary("kotlinc")
+        java_path = _find_binary("java")
+        if not kotlinc_path or not java_path:
+            return "", "Kotlin Compiler Error: kotlinc or java is not installed on server.", 127, False, False
+        filename = "main.kt"
+        compile_cmd = [kotlinc_path, filename, "-include-runtime", "-d", "main.jar"]
+        run_cmd = [java_path, "-jar", "main.jar"] + args
     elif canonical_key == "php":
         php_path = _find_binary("php")
         if not php_path:
             return "", "PHP Error: php CLI is not installed on server.", 127, False, False
-        run_cmd = [php_path, f"main{ext}"] + args
+        run_cmd = [php_path, filename] + args
     elif canonical_key == "ruby":
         ruby_path = _find_binary("ruby")
         if not ruby_path:
             return "", "Ruby Error: ruby is not installed on server.", 127, False, False
-        run_cmd = [ruby_path, f"main{ext}"] + args
+        run_cmd = [ruby_path, filename] + args
     elif canonical_key == "perl":
         perl_path = _find_binary("perl")
         if not perl_path:
             return "", "Perl Error: perl is not installed on server.", 127, False, False
-        run_cmd = [perl_path, f"main{ext}"] + args
+        run_cmd = [perl_path, filename] + args
 
     # Queue up: wait up to _EXECUTION_QUEUE_WAIT_S for a free execution slot.
     with _EXECUTION_STATS_LOCK:
@@ -562,7 +644,7 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
             result = _execute_sqlite_natively(code, timeout_s)
         else:
             result = _execute_in_tempdir(
-                canonical_key, code, stdin_str, run_cmd, compile_cmd, timeout_s
+                canonical_key, code, stdin_str, run_cmd, compile_cmd, timeout_s, filename=filename
             )
         _record_result(result)
         return result
@@ -573,6 +655,9 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
 
 
 @executor_bp.route("/languages", methods=["GET", "OPTIONS"])
+@executor_bp.route("/api/v1/languages", methods=["GET", "OPTIONS"])
+@executor_bp.route("/api/v2/runtimes", methods=["GET", "OPTIONS"])
+@executor_bp.route("/v2/runtimes", methods=["GET", "OPTIONS"])
 def list_languages():
     """Lists all supported native programming languages."""
     return jsonify({
@@ -585,6 +670,7 @@ def list_languages():
 
 
 @executor_bp.route("/languages/<string:lang_query>", methods=["GET", "OPTIONS"])
+@executor_bp.route("/api/v1/languages/<string:lang_query>", methods=["GET", "OPTIONS"])
 def get_language_detail(lang_query):
     """Returns details for a specific language or alias."""
     key = resolve_language_key(lang_query)
@@ -603,10 +689,13 @@ def get_language_detail(lang_query):
 
 
 @executor_bp.route("/execute", methods=["POST", "OPTIONS"])
+@executor_bp.route("/api/v1/execute", methods=["POST", "OPTIONS"])
+@executor_bp.route("/api/v2/execute", methods=["POST", "OPTIONS"])
+@executor_bp.route("/v2/execute", methods=["POST", "OPTIONS"])
 @require_api_key
 @apply_rate_limit
 def execute_code():
-    """Executes code natively on the server without external API dependencies."""
+    """Executes code natively on the server with Piston API v2 & ToolPix response contract."""
     # Reject oversized bodies before parsing JSON — the useful fields (code, stdin)
     # are strictly bounded, so anything larger is wasted CPU on JSON parsing.
     if request.content_length and request.content_length > _MAX_EXECUTE_BODY_BYTES:
@@ -676,20 +765,28 @@ def execute_code():
             }), 503
 
         is_success = exit_code == 0
+        output_combined = (stdout + "\n" + stderr) if (stdout and stderr) else (stdout + stderr)
         response_body = {
             "status": "success" if is_success else "error",
             "engine": "native_standalone",
             "language": canonical_key,
             "runtime": spec["language"],
             "filename": f"main{spec['extension']}",
-            "output": (stdout + "\n" + stderr) if (stdout and stderr) else (stdout + stderr),
+            "output": output_combined,
             "stdout": stdout,
             "stderr": stderr,
             "exit_code": exit_code,
             "execution_time_ms": elapsed_ms,
             "stdin_truncated": stdin_truncated,
             "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated
+            "stderr_truncated": stderr_truncated,
+            "run": {
+                "stdout": stdout,
+                "stderr": stderr,
+                "code": exit_code,
+                "signal": None,
+                "output": output_combined
+            }
         }
         if not is_success:
             response_body["error"] = stderr.strip() or f"Process exited with code {exit_code}"

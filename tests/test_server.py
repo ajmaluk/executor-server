@@ -199,10 +199,44 @@ class TestCodeExecutorServer(unittest.TestCase):
         res = self.client.post(
             "/api/v1/execute",
             headers={"X-API-Key": "test-global-secret-key"},
-            json={"language": "java", "code": "class Main {}"}
+            json={"language": "brainfuck", "code": "+++++."}
         )
         self.assertEqual(res.status_code, 400)
         self.assertIn("Unsupported language", res.get_json().get("message", ""))
+
+    def test_execute_java_language_supported(self):
+        """Java must be supported in the native executor registry."""
+        res = self.client.get("/api/v1/languages/java")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data.get("canonical_name"), "java")
+
+    def test_piston_v2_endpoint_and_payload(self):
+        """POST /v2/execute and POST /api/v2/execute with Piston files array payload should work."""
+        for endpoint in ["/v2/execute", "/api/v2/execute"]:
+            res = self.client.post(
+                endpoint,
+                headers={"X-API-Key": "test-global-secret-key"},
+                json={
+                    "language": "python",
+                    "version": "3.10.0",
+                    "files": [{"name": "main.py", "content": "print('Piston Python Test')"}]
+                }
+            )
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertIn("run", data)
+            self.assertEqual(data["run"]["code"], 0)
+            self.assertEqual(data["run"]["stdout"].strip(), "Piston Python Test")
+
+    def test_piston_v2_runtimes_endpoint(self):
+        """GET /v2/runtimes and GET /api/v2/runtimes should return language runtimes list."""
+        for endpoint in ["/v2/runtimes", "/api/v2/runtimes"]:
+            res = self.client.get(endpoint)
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertEqual(data.get("status"), "success")
+            self.assertIn("languages", data)
 
     def test_execute_c_compile_and_run(self):
         """Compiled C must compile then run the resulting binary.
