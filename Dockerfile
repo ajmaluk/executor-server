@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Pre-compile Go standard library cache during Docker build for sub-second execution
+RUN mkdir -p /tmp/gocache && chmod 777 /tmp/gocache && GOCACHE=/tmp/gocache go build std || true
+
 WORKDIR /app
 
 # Cache Python dependencies layer
