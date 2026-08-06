@@ -4,7 +4,9 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=10000 \
-    JAVA_HOME=/usr/lib/jvm/default-java
+    JAVA_HOME=/usr/lib/jvm/default-java \
+    GOCACHE=/tmp/gocache \
+    GOTMPDIR=/tmp
 
 # Install essential runtime tools & compilers in a single layer with apt cache cleanup
 RUN apt-get update && apt-get install -y --no-install-recommends \
