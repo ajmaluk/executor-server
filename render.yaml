@@ -1,15 +1,14 @@
 services:
   - type: web
     name: executor-server
-    env: python
+    env: docker
+    dockerfilePath: ./Dockerfile
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -c gunicorn.conf.py wsgi:app
     healthCheckPath: /healthz
     envVars:
       - key: GLOBAL_API_KEY
-        generateValue: true
+        value: "sec_executor_9k4Fz8xL2mP7qW1vR5tY3uI6oA0sD8f"
       - key: ALLOWED_ORIGINS
         value: "https://toolpix.pythonanywhere.com,https://uthakkan.in,*"
       - key: EXECUTOR_MAX_CODE_BYTES
