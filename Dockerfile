@@ -4,16 +4,16 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=10000 \
-    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+    JAVA_HOME=/usr/lib/jvm/default-java
 
 # Install essential runtime tools & compilers in a single layer with apt cache cleanup
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
-    openjdk-17-jdk-headless \
+    default-jdk-headless \
     gcc \
     g++ \
-    golang-go \
+    golang \
     rustc \
     php-cli \
     ruby \
