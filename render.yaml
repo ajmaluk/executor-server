@@ -15,5 +15,5 @@ services:
         value: "65536"
       - key: EXECUTOR_MAX_OUTPUT_BYTES
         value: "200000"
-      - key: RATE_LIMIT_ENABLED
-        value: "false"
+      - key: EXECUTOR_TIMEOUT_S
+        value: "30"
