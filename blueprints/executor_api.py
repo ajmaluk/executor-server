@@ -402,6 +402,14 @@ def _read_capped(proc, timeout_s, max_output_bytes):
                 pass
             out = b"".join(bufs["out"]).decode("utf-8", errors="replace")
             err = b"".join(bufs["err"]).decode("utf-8", errors="replace")
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
             return out, err, True, truncated["out"], truncated["err"]
 
         if proc.poll() is not None:
