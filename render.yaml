@@ -8,7 +8,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: GLOBAL_API_KEY
-        value: "sec_executor_9k4Fz8xL2mP7qW1vR5tY3uI6oA0sD8f"
+        value: "<YOUR_EXECUTOR_API_KEY>"
       - key: ALLOWED_ORIGINS
         value: "https://toolpix.pythonanywhere.com,https://uthakkan.in,*"
       - key: EXECUTOR_MAX_CODE_BYTES
