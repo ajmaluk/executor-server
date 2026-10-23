@@ -462,7 +462,7 @@ def _run_process(cmd, cwd, stdin_str="", timeout_s=30, max_output_bytes=None):
         "CGO_ENABLED": "0",
         "GODEBUG": "madvdontneed=1",
         "GO111MODULE": "off",
-        "GOCACHE": os.environ.get("GOCACHE", "/tmp/gocache"),
+        "GOCACHE": os.environ.get("GOCACHE", "/opt/gocache"),
         "GOTMPDIR": os.environ.get("GOTMPDIR", "/tmp"),
     })
     if "HOME" not in env or env["HOME"] == "/":
@@ -533,10 +533,10 @@ def _execute_in_tempdir(canonical_key, code, stdin_str, run_cmd, compile_cmd, ti
 
         start_ts = time.time()
 
-        # Step 1: Compile if required — give compilation up to max(20, timeout_s - 5) seconds
+        # Step 1: Compile if required — allow compilation up to max(35, timeout_s) seconds
         compile_output = ""
         if compile_cmd_full:
-            compile_timeout = max(20, timeout_s - 5)
+            compile_timeout = max(35, timeout_s)
             comp_out, comp_err, comp_rc, _, _ = _run_process(
                 compile_cmd_full, cwd=tmpdir, timeout_s=compile_timeout
             )
@@ -544,9 +544,9 @@ def _execute_in_tempdir(canonical_key, code, stdin_str, run_cmd, compile_cmd, ti
             if comp_rc != 0:
                 return "", f"Compilation Failed:\n{compile_output}", comp_rc, False, False
 
-        # Step 2: Execute — give it the full remaining time budget
+        # Step 2: Execute — give it the full remaining time budget (at least 10s)
         elapsed = time.time() - start_ts
-        exec_timeout = max(5, timeout_s - int(elapsed))
+        exec_timeout = max(10, timeout_s - int(elapsed))
 
         return _run_process(
             run_cmd_full, cwd=tmpdir, stdin_str=stdin_str, timeout_s=exec_timeout
@@ -624,7 +624,7 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
             return "", "Go Error: go binary is not installed on server.", 127, False, False
         if not filename or not filename.endswith(".go"):
             filename = "main.go"
-        compile_cmd = [go_path, "build", "-o", "main.out", filename]
+        compile_cmd = [go_path, "build", "-ldflags=-s -w", "-o", "main.out", filename]
         run_cmd = ["main.out"] + args
     elif canonical_key == "rust":
         rustc_path = _find_binary("rustc")
@@ -642,11 +642,18 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
     elif canonical_key == "kotlin":
         kotlinc_path = _find_binary("kotlinc")
         java_path = _find_binary("java")
-        if not kotlinc_path or not java_path:
+        kotlin_path = _find_binary("kotlin")
+        if not kotlinc_path or not (java_path or kotlin_path):
             return "", "Kotlin Compiler Error: kotlinc or java is not installed on server.", 127, False, False
-        filename = "main.kt"
-        compile_cmd = [kotlinc_path, filename, "-include-runtime", "-d", "main.jar"]
-        run_cmd = [java_path, "-jar", "main.jar"] + args
+        if not filename or not filename.endswith(".kt"):
+            filename = "main.kt"
+        base_name = os.path.splitext(filename)[0]
+        main_class = (base_name[:1].upper() + base_name[1:]) + "Kt"
+        compile_cmd = [kotlinc_path, filename, "-d", "main.jar"]
+        if kotlin_path:
+            run_cmd = [kotlin_path, "-cp", "main.jar", main_class] + args
+        else:
+            run_cmd = [java_path, "-cp", "/opt/kotlinc/lib/*:main.jar", main_class] + args
     elif canonical_key == "php":
         php_path = _find_binary("php")
         if not php_path:
@@ -790,6 +797,22 @@ def execute_code():
     if custom_filename:
         custom_filename = os.path.basename(custom_filename)
 
+    req_timeout = None
+    if data.get("timeout"):
+        try:
+            req_timeout = int(data["timeout"])
+        except (ValueError, TypeError):
+            pass
+    if req_timeout is None and data.get("timeout_s"):
+        try:
+            req_timeout = int(data["timeout_s"])
+        except (ValueError, TypeError):
+            pass
+    if req_timeout is not None:
+        timeout_s = min(60, max(5, req_timeout))
+    else:
+        timeout_s = ServerConfig.EXECUTOR_TIMEOUT_S
+
     start_t = time.time()
     try:
         stdout, stderr, exit_code, stdout_truncated, stderr_truncated = _execute_native_subprocess(
@@ -797,7 +820,7 @@ def execute_code():
             code=code_str,
             stdin_str=stdin_str,
             args=sanitized_args,
-            timeout_s=ServerConfig.EXECUTOR_TIMEOUT_S,
+            timeout_s=timeout_s,
             filename=custom_filename
         )
 

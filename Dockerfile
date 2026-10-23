@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=10000 \
     JAVA_HOME=/usr/lib/jvm/default-java \
-    GOCACHE=/tmp/gocache \
+    GOCACHE=/opt/gocache \
     GOTMPDIR=/tmp \
     GOMAXPROCS=2 \
     CGO_ENABLED=0 \
@@ -28,14 +28,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install standalone Kotlin compiler
+# Install standalone Kotlin compiler & runner
 RUN curl -sSL "https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip" -o /tmp/kotlinc.zip \
     && unzip -q /tmp/kotlinc.zip -d /opt \
     && rm /tmp/kotlinc.zip \
-    && ln -s /opt/kotlinc/bin/kotlinc /usr/local/bin/kotlinc
+    && ln -s /opt/kotlinc/bin/kotlinc /usr/local/bin/kotlinc \
+    && ln -s /opt/kotlinc/bin/kotlin /usr/local/bin/kotlin
 
-# Pre-compile Go standard library cache during Docker build for sub-second execution
-RUN mkdir -p /tmp/gocache && chmod 777 /tmp/gocache && GOCACHE=/tmp/gocache go build std || true
+# Pre-compile Go standard library cache into /opt/gocache for instant compilation
+RUN mkdir -p /opt/gocache && GOCACHE=/opt/gocache CGO_ENABLED=0 go build std || true && chmod -R 777 /opt/gocache
 
 WORKDIR /app
 
