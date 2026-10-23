@@ -48,7 +48,7 @@ class ServerConfig:
     EXECUTOR_MAX_CODE_BYTES = int(os.environ.get("EXECUTOR_MAX_CODE_BYTES", "65536"))  # 64 KB limit
     EXECUTOR_MAX_OUTPUT_BYTES = int(os.environ.get("EXECUTOR_MAX_OUTPUT_BYTES", "200000"))  # 200 KB limit
     EXECUTOR_MAX_STDIN_BYTES = int(os.environ.get("EXECUTOR_MAX_STDIN_BYTES", "10000"))
-    EXECUTOR_TIMEOUT_S = int(os.environ.get("EXECUTOR_TIMEOUT_S", "30"))
+    EXECUTOR_TIMEOUT_S = int(os.environ.get("EXECUTOR_TIMEOUT_S", "45"))
     # Max seconds a request waits in the execution queue before being rejected as busy (HTTP 503).
     EXECUTOR_QUEUE_WAIT_S = int(os.environ.get("EXECUTOR_QUEUE_WAIT_S", "15"))
 

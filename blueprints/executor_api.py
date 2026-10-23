@@ -385,7 +385,7 @@ def _read_capped(proc, timeout_s, max_output_bytes):
         # Non-blocking drain after the process has exited.
         while True:
             try:
-                chunk = stream.read(65536)
+                chunk = os.read(stream.fileno(), 65536)
             except (OSError, ValueError):
                 break
             if not chunk:
@@ -458,11 +458,15 @@ def _run_process(cmd, cwd, stdin_str="", timeout_s=30, max_output_bytes=None):
 
     env = dict(os.environ)
     env.update({
-        "GOMAXPROCS": "1",
+        "GOMAXPROCS": os.environ.get("GOMAXPROCS", "2"),
         "CGO_ENABLED": "0",
         "GODEBUG": "madvdontneed=1",
         "GO111MODULE": "off",
+        "GOCACHE": os.environ.get("GOCACHE", "/tmp/gocache"),
+        "GOTMPDIR": os.environ.get("GOTMPDIR", "/tmp"),
     })
+    if "HOME" not in env or env["HOME"] == "/":
+        env["HOME"] = "/tmp"
 
     try:
         proc = subprocess.Popen(
@@ -514,7 +518,7 @@ def _execute_in_tempdir(canonical_key, code, stdin_str, run_cmd, compile_cmd, ti
             for i, part in enumerate(cmd):
                 if part == filename or part == f"main{ext}":
                     resolved.append(src_path)
-                elif canonical_key in ("c", "cpp", "rust") and part == "main.out":
+                elif canonical_key in ("c", "cpp", "rust", "go") and part == "main.out":
                     resolved.append(os.path.join(tmpdir, "main.out"))
                 elif canonical_key == "kotlin" and part == "main.jar":
                     resolved.append(os.path.join(tmpdir, "main.jar"))
@@ -561,14 +565,17 @@ def _record_result(result):
             _EXECUTION_STATS["failed"] += 1
 
 
-def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, args: list, timeout_s: int):
+def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, args: list, timeout_s: int, filename: str = None):
     """Executes code using native server interpreters and compilers inside a temporary directory sandbox."""
     # Resolve compile/run commands before acquiring the semaphore
     compile_cmd = None
     run_cmd = []
     spec = NATIVE_LANGUAGE_REGISTRY[canonical_key]
     ext = spec["extension"]
-    filename = f"main{ext}"
+    if not filename:
+        filename = f"main{ext}"
+    else:
+        filename = os.path.basename(filename)
 
     if canonical_key == "python":
         run_cmd = [sys.executable, filename] + args
@@ -602,7 +609,12 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
         class_match = re.search(r"public\s+class\s+([A-Za-z_][A-Za-z0-9_]*)", code)
         if not class_match:
             class_match = re.search(r"class\s+([A-Za-z_][A-Za-z0-9_]*)", code)
-        class_name = class_match.group(1) if class_match else "Main"
+        if class_match:
+            class_name = class_match.group(1)
+        elif filename and filename.endswith(".java") and filename[:-5]:
+            class_name = filename[:-5]
+        else:
+            class_name = "Main"
         filename = f"{class_name}.java"
         compile_cmd = [javac_path, filename]
         run_cmd = [java_path, class_name] + args
@@ -610,8 +622,10 @@ def _execute_native_subprocess(canonical_key: str, code: str, stdin_str: str, ar
         go_path = _find_binary("go")
         if not go_path:
             return "", "Go Error: go binary is not installed on server.", 127, False, False
-        filename = "main.go"
-        run_cmd = [go_path, "run", filename] + args
+        if not filename or not filename.endswith(".go"):
+            filename = "main.go"
+        compile_cmd = [go_path, "build", "-o", "main.out", filename]
+        run_cmd = ["main.out"] + args
     elif canonical_key == "rust":
         rustc_path = _find_binary("rustc")
         if not rustc_path:
@@ -768,6 +782,14 @@ def execute_code():
     sanitized_args = sanitize_args(args_raw)
     spec = NATIVE_LANGUAGE_REGISTRY[canonical_key]
 
+    custom_filename = None
+    if isinstance(data.get("files"), list) and len(data["files"]) > 0:
+        custom_filename = data["files"][0].get("name")
+    if not custom_filename and data.get("filename"):
+        custom_filename = str(data.get("filename")).strip()
+    if custom_filename:
+        custom_filename = os.path.basename(custom_filename)
+
     start_t = time.time()
     try:
         stdout, stderr, exit_code, stdout_truncated, stderr_truncated = _execute_native_subprocess(
@@ -775,7 +797,8 @@ def execute_code():
             code=code_str,
             stdin_str=stdin_str,
             args=sanitized_args,
-            timeout_s=ServerConfig.EXECUTOR_TIMEOUT_S
+            timeout_s=ServerConfig.EXECUTOR_TIMEOUT_S,
+            filename=custom_filename
         )
 
         elapsed_ms = round((time.time() - start_t) * 1000, 2)
@@ -794,7 +817,7 @@ def execute_code():
             "engine": "native_standalone",
             "language": canonical_key,
             "runtime": spec["language"],
-            "filename": f"main{spec['extension']}",
+            "filename": custom_filename or f"main{spec['extension']}",
             "output": output_combined,
             "stdout": stdout,
             "stderr": stderr,

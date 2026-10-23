@@ -8,7 +8,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: GLOBAL_API_KEY
-        value: "<YOUR_EXECUTOR_API_KEY>"
+        sync: false
       - key: ALLOWED_ORIGINS
         value: "https://toolpix.pythonanywhere.com,https://uthakkan.in,*"
       - key: EXECUTOR_MAX_CODE_BYTES
@@ -16,4 +16,4 @@ services:
       - key: EXECUTOR_MAX_OUTPUT_BYTES
         value: "200000"
       - key: EXECUTOR_TIMEOUT_S
-        value: "30"
+        value: "45"

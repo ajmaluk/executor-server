@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     JAVA_HOME=/usr/lib/jvm/default-java \
     GOCACHE=/tmp/gocache \
     GOTMPDIR=/tmp \
-    GOMAXPROCS=1 \
+    GOMAXPROCS=2 \
     CGO_ENABLED=0 \
     GO111MODULE=off
 
@@ -25,7 +25,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     perl \
     sqlite3 \
     nodejs \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install standalone Kotlin compiler
+RUN curl -sSL "https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip" -o /tmp/kotlinc.zip \
+    && unzip -q /tmp/kotlinc.zip -d /opt \
+    && rm /tmp/kotlinc.zip \
+    && ln -s /opt/kotlinc/bin/kotlinc /usr/local/bin/kotlinc
 
 # Pre-compile Go standard library cache during Docker build for sub-second execution
 RUN mkdir -p /tmp/gocache && chmod 777 /tmp/gocache && GOCACHE=/tmp/gocache go build std || true
